@@ -1,17 +1,27 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="style.css">
-    <title>Multiplication Practice</title>
+  <meta charset="UTF-8">
+  <title>Multiply Study Tool</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div class="container">
     <h1>Multiplication Practice</h1>
-    <div id="question"></div>
-    <input type="number" id="answer" placeholder="Your answer">
-    <button id="submit">Submit</button>
-    <div id="result"></div>
-    <script src="script.js"></script>
+    <div id="question-container">
+      <span id="question"></span>
+    </div>
+    <form id="answer-form">
+      <input type="number" id="answer-input" autocomplete="off" required placeholder="Your answer" />
+      <button type="submit">Submit</button>
+    </form>
+    <div id="feedback"></div>
+    <div class="scoreboard">
+      <span>Score: <span id="score">0</span></span>
+      <span>Streak: <span id="streak">0</span></span>
+    </div>
+    <button id="next-btn" style="display:none;">Next Question</button>
+  </div>
+  <script src="script.js"></script>
 </body>
 </html>
