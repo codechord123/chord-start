@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head><title>Icon Generator</title></head>
+<body>
+<!-- 이 파일을 브라우저에서 열면 아이콘을 생성할 수 있습니다 -->
+<canvas id="c192" width="192" height="192"></canvas>
+<canvas id="c512" width="512" height="512"></canvas>
+<script>
+function drawIcon(canvas) {
+  const ctx = canvas.getContext('2d');
+  const size = canvas.width;
+  const r = size * 0.12;
+
+  // Background
+  const grad = ctx.createLinearGradient(0, 0, size, size);
+  grad.addColorStop(0, '#3b82f6');
+  grad.addColorStop(1, '#6366f1');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(0, 0, size, size, r);
+  ctx.fill();
+
+  // Calendar icon
+  ctx.fillStyle = 'white';
+  const p = size * 0.15;
+  const w = size - p * 2;
+  const h = size - p * 2;
+  const cr = size * 0.06;
+
+  ctx.beginPath();
+  ctx.roundRect(p, p + h * 0.12, w, h * 0.82, cr);
+  ctx.fill();
+
+  // Header bar
+  ctx.fillStyle = '#2563eb';
+  ctx.beginPath();
+  ctx.roundRect(p, p + h * 0.12, w, h * 0.22, [cr, cr, 0, 0]);
+  ctx.fill();
+
+  // Calendar ring hooks
+  ctx.fillStyle = '#1d4ed8';
+  const hookW = size * 0.05;
+  const hookH = size * 0.12;
+  const hookY = p - hookH * 0.4;
+  ctx.beginPath();
+  ctx.roundRect(p + w * 0.25 - hookW / 2, hookY, hookW, hookH, hookW / 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.roundRect(p + w * 0.75 - hookW / 2, hookY, hookW, hookH, hookW / 2);
+  ctx.fill();
+
+  // Grid dots
+  const dotR = size * 0.03;
+  const gridTop = p + h * 0.42;
+  const colPositions = [0.2, 0.4, 0.6, 0.8];
+  const rowPositions = [0, 1, 2];
+  ctx.fillStyle = '#3b82f6';
+  rowPositions.forEach((row, ri) => {
+    colPositions.forEach((col, ci) => {
+      if (ri === 0 && ci === 0) return; // skip top-left (date indicator)
+      ctx.beginPath();
+      ctx.arc(p + w * col, gridTop + (size * 0.12) * row, dotR, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  });
+
+  // Today circle
+  ctx.fillStyle = '#ef4444';
+  ctx.beginPath();
+  ctx.arc(p + w * 0.2, gridTop, dotR * 1.6, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+['c192','c512'].forEach(id => drawIcon(document.getElementById(id)));
+
+// Download links
+['c192','c512'].forEach(id => {
+  const canvas = document.getElementById(id);
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = `icon-${canvas.width}.png`;
+  a.textContent = `Download icon-${canvas.width}.png`;
+  a.style.display = 'block';
+  document.body.appendChild(a);
+});
+</script>
+</body>
+</html>
