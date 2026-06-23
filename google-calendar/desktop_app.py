@@ -12,20 +12,31 @@ import threading
 import functools
 import http.server
 
-from PyQt6.QtCore import Qt, QUrl, QSettings
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QSizeGrip, QSystemTrayIcon, QMenu
-)
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
+try:
+    from PyQt6.QtCore import Qt, QUrl, QSettings
+    from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
+    from PyQt6.QtWidgets import (
+        QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+        QPushButton, QSizeGrip, QSystemTrayIcon, QMenu
+    )
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
+except ImportError as _e:
+    try:
+        import tkinter as _tk, tkinter.messagebox as _mb
+        _tk.Tk().withdraw()
+        _mb.showerror("패키지 없음",
+            f"필수 패키지가 설치되지 않았습니다:\n{_e}\n\n"
+            "install.bat 을 다시 실행해 주세요.")
+    except Exception:
+        pass
+    sys.exit(1)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 HTML_FILE = 'index.html'
 
 
-# ── 로컬 웹서버 (구글 로그인 origin 문제 해결을 위해 http로 서빙) ──────────
+# ── 로컬 웹서버 (구글 로그인 origin 문제 해결) ────────────────────────────
 def find_free_port(preferred=8765):
     for port in [preferred, 8766, 8767, 8768, 8770, 8800]:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -46,7 +57,7 @@ def start_server(port):
     return httpd
 
 
-# ── 자동 숨김 드래그 바 (평소엔 거의 안 보이고, 마우스 올리면 나타남) ──────
+# ── 자동 숨김 드래그 바 (마우스 올리면 나타남) ───────────────────────────
 class DragBar(QWidget):
     def __init__(self, window):
         super().__init__()
@@ -64,9 +75,10 @@ class DragBar(QWidget):
         lay.addWidget(self._grip)
         lay.addStretch()
 
-        self._pin_btn = self._make_btn("\U0001F4CC", "항상 위에 고정", self._win.toggle_pin)
+        self._pin_btn = self._make_btn("📌", "항상 위에 고정", self._win.toggle_pin)
         self._buttons = [
             self._pin_btn,
+            self._make_btn("↻", "새로고침", self._win.reload_page),
             self._make_btn("—", "숨기기", self._win.hide),
             self._make_btn("✕", "종료", QApplication.quit),
         ]
@@ -89,7 +101,6 @@ class DragBar(QWidget):
         return b
 
     def _apply_style(self, hovered):
-        # 평소: 거의 투명 / 마우스 올리면: 진해지고 버튼 보임
         if hovered:
             self.setStyleSheet("background: rgba(10,18,35,0.85);")
             self._grip.setStyleSheet("color: rgba(255,255,255,0.9); font-size:11px; font-weight:bold;")
@@ -133,13 +144,14 @@ class DragBar(QWidget):
 class CalendarWidget(QWidget):
     def __init__(self, url):
         super().__init__()
+        self._url = url
         self._settings = QSettings("TeacherCalendar", "widget")
         self._pinned = False
 
         self.setWindowTitle("선생님 캘린더")
         self._apply_flags()
 
-        # 영구 프로필 (TODO 등 localStorage 저장 유지)
+        # 영구 프로필 — TODO 등 localStorage 저장 유지
         profile = QWebEngineProfile("teacher_calendar", self)
         storage = os.path.join(APP_DIR, ".webdata")
         os.makedirs(storage, exist_ok=True)
@@ -178,7 +190,6 @@ class CalendarWidget(QWidget):
             self.move(screen.right() - 960, screen.bottom() - 720)
 
     def _apply_flags(self):
-        # 기본: 프레임 없음 + 작업표시줄 안 뜸(Tool) + 항상 바탕화면 위(맨 아래)
         flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
         if self._pinned:
             flags |= Qt.WindowType.WindowStaysOnTopHint
@@ -190,7 +201,7 @@ class CalendarWidget(QWidget):
         self._pinned = not self._pinned
         self._apply_flags()
         self._bar.set_pinned(self._pinned)
-        self.show()  # 플래그 변경 후 재표시 필요
+        self.show()
 
     def toggle_visible(self):
         if self.isVisible():
@@ -198,6 +209,9 @@ class CalendarWidget(QWidget):
         else:
             self.show()
             self.lower() if not self._pinned else self.raise_()
+
+    def reload_page(self):
+        self._view.setUrl(QUrl(self._url))
 
     def save_geometry(self):
         self._settings.setValue("geometry", self.saveGeometry())
@@ -222,7 +236,7 @@ def make_icon():
     p.drawRoundedRect(4, 4, 56, 56, 14, 14)
     p.setPen(QColor("white"))
     p.setFont(QFont("Segoe UI Emoji", 26))
-    p.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, "\U0001F4C5")
+    p.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, "📅")
     p.end()
     return QIcon(px)
 
@@ -232,29 +246,49 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("선생님 캘린더")
 
-    if not os.path.exists(os.path.join(APP_DIR, HTML_FILE)):
+    html_path = os.path.join(APP_DIR, HTML_FILE)
+    if not os.path.exists(html_path):
         from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(None, "오류", f"{HTML_FILE} 파일을 찾을 수 없습니다.")
+        QMessageBox.critical(None, "오류",
+            f"{HTML_FILE} 파일을 찾을 수 없습니다.\n경로: {html_path}")
         sys.exit(1)
 
     port = find_free_port()
     start_server(port)
-    win = CalendarWidget(f"http://localhost:{port}/{HTML_FILE}")
+    url = f"http://localhost:{port}/{HTML_FILE}"
+
+    win = CalendarWidget(url)
     win.show()
-    win.lower()  # 시작 시 바탕화면 레벨로
+    win.lower()
 
     tray = QSystemTrayIcon(make_icon(), app)
     tray.setToolTip("선생님 캘린더")
+
     menu = QMenu()
     menu.setStyleSheet(
         "QMenu{background:white;border:1px solid #e2e8f0;border-radius:8px;padding:4px;}"
         "QMenu::item{padding:7px 22px;border-radius:5px;font-size:13px;}"
         "QMenu::item:selected{background:#eff6ff;color:#2563eb;}"
     )
-    a_show = QAction("표시 / 숨기기", app); a_show.triggered.connect(win.toggle_visible); menu.addAction(a_show)
-    a_pin = QAction("항상 위에 고정 켜기/끄기", app); a_pin.triggered.connect(win.toggle_pin); menu.addAction(a_pin)
+
+    a_show = QAction("표시 / 숨기기", app)
+    a_show.triggered.connect(win.toggle_visible)
+    menu.addAction(a_show)
+
+    a_pin = QAction("항상 위에 고정 켜기/끄기", app)
+    a_pin.triggered.connect(win.toggle_pin)
+    menu.addAction(a_pin)
+
+    a_reload = QAction("새로고침", app)
+    a_reload.triggered.connect(win.reload_page)
+    menu.addAction(a_reload)
+
     menu.addSeparator()
-    a_quit = QAction("종료", app); a_quit.triggered.connect(app.quit); menu.addAction(a_quit)
+
+    a_quit = QAction("종료", app)
+    a_quit.triggered.connect(app.quit)
+    menu.addAction(a_quit)
+
     tray.setContextMenu(menu)
     tray.activated.connect(
         lambda r: win.toggle_visible() if r == QSystemTrayIcon.ActivationReason.Trigger else None
