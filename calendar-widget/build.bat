@@ -1,23 +1,22 @@
 @echo off
-chcp 65001 > nul
 echo ================================
-echo  선생님 캘린더 빌드 시작
+echo  Teacher Calendar - Build
 echo ================================
+echo.
 
-echo [1/2] 필수 라이브러리 설치 중...
-pip install PyQt6 pyinstaller --quiet
+echo [1/2] Installing libraries...
+pip install PyQt6 pyinstaller
 
-echo [2/2] .exe 파일 생성 중...
-pyinstaller ^
-  --onefile ^
-  --windowed ^
-  --name "선생님캘린더" ^
-  --add-data "data.json;." ^
-  --add-data "config.json;." ^
-  main.py
+echo.
+echo [2/2] Building TeacherCalendar.exe ...
+
+if not exist data.json echo {}> data.json
+if not exist config.json echo {}> config.json
+
+pyinstaller --onefile --windowed --name TeacherCalendar main.py
 
 echo.
 echo ================================
-echo  완료! dist\선생님캘린더.exe 를 실행하세요.
+echo  Done!  Run: dist\TeacherCalendar.exe
 echo ================================
 pause
