@@ -1,6 +1,6 @@
 """
 선생님 캘린더 - 데스크탑 위젯
-index.html (구글 캘린더 + TODO)을 바탕화면 위젯 또는 일반 프로그램 창으로 띄웁니다.
+index.html (구글 캘린더 + TODO)을 바탕화면에 얹히는 위젯으로 띄웁니다.
 
 실행: pythonw desktop_app.py
 필요: pip install PyQt6 PyQt6-WebEngine
@@ -57,7 +57,7 @@ def start_server(port):
     return httpd
 
 
-# ── 자동 숨김 드래그 바 (위젯 모드 전용, 마우스 올리면 나타남) ────────────
+# ── 자동 숨김 드래그 바 (마우스 올리면 나타남) ───────────────────────────
 class DragBar(QWidget):
     def __init__(self, window):
         super().__init__()
@@ -78,10 +78,9 @@ class DragBar(QWidget):
         self._pin_btn = self._make_btn("📌", "항상 위에 고정", self._win.toggle_pin)
         self._buttons = [
             self._pin_btn,
-            self._make_btn("🪟", "프로그램 창으로 전환", self._win.toggle_window_mode),
-            self._make_btn("↻",  "새로고침", self._win.reload_page),
-            self._make_btn("—",  "숨기기", self._win.hide),
-            self._make_btn("✕",  "종료", QApplication.quit),
+            self._make_btn("↻", "새로고침", self._win.reload_page),
+            self._make_btn("—", "숨기기", self._win.hide),
+            self._make_btn("✕", "종료", QApplication.quit),
         ]
         for b in self._buttons:
             lay.addWidget(b)
@@ -148,8 +147,6 @@ class CalendarWidget(QWidget):
         self._url = url
         self._settings = QSettings("TeacherCalendar", "widget")
         self._pinned = False
-        # True = 바탕화면 위젯 모드 / False = 일반 프로그램 창 모드
-        self._widget_mode = self._settings.value("widget_mode", True, type=bool)
 
         self.setWindowTitle("선생님 캘린더")
         self._apply_flags()
@@ -176,16 +173,12 @@ class CalendarWidget(QWidget):
         root.addWidget(self._bar)
         root.addWidget(self._view, 1)
 
-        self._grip_widget = QSizeGrip(self)
+        grip = QSizeGrip(self)
         grow = QHBoxLayout()
         grow.setContentsMargins(0, 0, 2, 2)
         grow.addStretch()
-        grow.addWidget(self._grip_widget)
+        grow.addWidget(grip)
         root.addLayout(grow)
-
-        # 위젯 모드가 아닐 때는 커스텀 드래그 바 / 사이즈 그립 숨김
-        self._bar.setVisible(self._widget_mode)
-        self._grip_widget.setVisible(self._widget_mode)
 
         # 저장된 위치/크기 복원
         geo = self._settings.value("geometry")
@@ -197,27 +190,10 @@ class CalendarWidget(QWidget):
             self.move(screen.right() - 960, screen.bottom() - 720)
 
     def _apply_flags(self):
-        if self._widget_mode:
-            # 바탕화면 위젯: 프레임 없음, 작업표시줄 없음
-            flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
-            flags |= Qt.WindowType.WindowStaysOnTopHint if self._pinned else Qt.WindowType.WindowStaysOnBottomHint
-        else:
-            # 일반 프로그램 창: 기본 타이틀바, 작업표시줄 표시
-            flags = Qt.WindowType.Window
-            if self._pinned:
-                flags |= Qt.WindowType.WindowStaysOnTopHint
+        # 바탕화면 위젯: 프레임 없음, 작업표시줄 없음
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
+        flags |= Qt.WindowType.WindowStaysOnTopHint if self._pinned else Qt.WindowType.WindowStaysOnBottomHint
         self.setWindowFlags(flags)
-
-    def toggle_window_mode(self):
-        """바탕화면 위젯 모드 ↔ 일반 프로그램 창 모드 전환"""
-        self._widget_mode = not self._widget_mode
-        self._settings.setValue("widget_mode", self._widget_mode)
-        self._bar.setVisible(self._widget_mode)
-        self._grip_widget.setVisible(self._widget_mode)
-        self._apply_flags()
-        self.show()
-        if self._widget_mode and not self._pinned:
-            self.lower()
 
     def toggle_pin(self):
         self._pinned = not self._pinned
@@ -230,10 +206,7 @@ class CalendarWidget(QWidget):
             self.hide()
         else:
             self.show()
-            if self._widget_mode and not self._pinned:
-                self.lower()
-            else:
-                self.raise_()
+            self.lower() if not self._pinned else self.raise_()
 
     def reload_page(self):
         self._view.setUrl(QUrl(self._url))
@@ -246,13 +219,8 @@ class CalendarWidget(QWidget):
         self.save_geometry()
 
     def closeEvent(self, e):
-        # 프로그램 창 모드에서 X 버튼 클릭 시 → 트레이로 숨기기 (종료 아님)
-        if not self._widget_mode:
-            e.ignore()
-            self.hide()
-        else:
-            self.save_geometry()
-            super().closeEvent(e)
+        self.save_geometry()
+        super().closeEvent(e)
 
 
 # ── 트레이 아이콘 ────────────────────────────────────────────────────────
@@ -289,8 +257,7 @@ def main():
 
     win = CalendarWidget(url)
     win.show()
-    if win._widget_mode and not win._pinned:
-        win.lower()
+    win.lower()
 
     tray = QSystemTrayIcon(make_icon(), app)
     tray.setToolTip("선생님 캘린더")
@@ -305,10 +272,6 @@ def main():
     a_show = QAction("표시 / 숨기기", app)
     a_show.triggered.connect(win.toggle_visible)
     menu.addAction(a_show)
-
-    a_mode = QAction("모드 전환  (위젯 ↔ 프로그램 창)", app)
-    a_mode.triggered.connect(win.toggle_window_mode)
-    menu.addAction(a_mode)
 
     a_pin = QAction("항상 위에 고정 켜기/끄기", app)
     a_pin.triggered.connect(win.toggle_pin)
