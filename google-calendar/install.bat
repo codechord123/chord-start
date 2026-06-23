@@ -25,7 +25,7 @@ if "%PY%"=="py" set PYW=pyw
 for /f "tokens=*" %%v in ('%PY% --version 2^>^&1') do echo Python: %%v
 echo.
 
-echo [1/2] Installing PyQt6 and PyQt6-WebEngine...
+echo [1/3] Installing PyQt6 and PyQt6-WebEngine...
 echo       (First run downloads about 150MB, please wait)
 %PY% -m pip install --upgrade PyQt6 PyQt6-WebEngine
 if errorlevel 1 (
@@ -38,7 +38,15 @@ if errorlevel 1 (
 )
 echo.
 
-echo [2/2] Adding to Windows startup...
+echo [2/3] Installing pywin32 (for true desktop-widget mode)...
+echo       (Optional - app still works without it)
+%PY% -m pip install --upgrade pywin32
+if errorlevel 1 (
+    echo   [WARN] pywin32 install failed - widget will use fallback mode.
+)
+echo.
+
+echo [3/3] Adding to Windows startup...
 set "VBS=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\TeacherCalendar.vbs"
 echo CreateObject("WScript.Shell").Run "%PYW% ""%~dp0desktop_app.py""", 0, False> "%VBS%"
 echo   Registered: %VBS%
