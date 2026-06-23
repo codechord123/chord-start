@@ -45,6 +45,14 @@ if not exist config.json echo {}> config.json
 
 echo.
 echo ================================
-echo  Done!  Run: dist\TeacherCalendar.exe
+echo  Done!  Opening the dist folder...
+echo  Run: dist\TeacherCalendar.exe
 echo ================================
+
+REM Open the dist folder in Explorer automatically
+if exist dist\TeacherCalendar.exe (
+    explorer dist
+) else (
+    echo [ERROR] Build did not produce the exe. Scroll up to see the error.
+)
 pause
