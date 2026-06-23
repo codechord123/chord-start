@@ -1,6 +1,6 @@
 @echo off
 echo ================================
-echo  Teacher Calendar - Build
+echo  Teacher Calendar - Run
 echo ================================
 echo.
 
@@ -27,24 +27,10 @@ if "%PY%"=="" (
 
 echo Using Python: %PY%
 echo.
+echo Installing PyQt6 (first time only)...
+%PY% -m pip install PyQt6 >nul 2>nul
 
-echo [1/3] Upgrading pip...
-%PY% -m pip install --upgrade pip
+echo Starting calendar...
+%PY% main.py
 
-echo.
-echo [2/3] Installing PyQt6 and PyInstaller...
-%PY% -m pip install PyQt6 pyinstaller
-
-echo.
-echo [3/3] Building TeacherCalendar.exe ...
-
-if not exist data.json echo {}> data.json
-if not exist config.json echo {}> config.json
-
-%PY% -m PyInstaller --onefile --windowed --name TeacherCalendar main.py
-
-echo.
-echo ================================
-echo  Done!  Run: dist\TeacherCalendar.exe
-echo ================================
 pause
