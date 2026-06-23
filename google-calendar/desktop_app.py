@@ -1,8 +1,8 @@
 """
-선생님 캘린더 - 데스크탑 앱
-index.html (구글 캘린더 + TODO 위젯)을 그대로 데스크탑 창으로 띄웁니다.
+선생님 캘린더 - 데스크탑 위젯
+index.html (구글 캘린더 + TODO)을 바탕화면에 얹히는 위젯으로 띄웁니다.
 
-실행: pythonw desktop_app.py   (검은 창 없이)
+실행: pythonw desktop_app.py
 필요: pip install PyQt6 PyQt6-WebEngine
 """
 import os
@@ -12,7 +12,7 @@ import threading
 import functools
 import http.server
 
-from PyQt6.QtCore import Qt, QUrl, QPoint
+from PyQt6.QtCore import Qt, QUrl, QSettings
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -36,61 +36,86 @@ def find_free_port(preferred=8765):
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
-        pass  # 콘솔 로그 끄기
+        pass
 
 
 def start_server(port):
     handler = functools.partial(QuietHandler, directory=APP_DIR)
     httpd = http.server.ThreadingHTTPServer(('127.0.0.1', port), handler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
 
 
-# ── 드래그 가능한 상단 바 ────────────────────────────────────────────────
+# ── 자동 숨김 드래그 바 (평소엔 거의 안 보이고, 마우스 올리면 나타남) ──────
 class DragBar(QWidget):
     def __init__(self, window):
         super().__init__()
         self._win = window
         self._press = None
-        self.setFixedHeight(30)
-        self.setStyleSheet("background: rgba(10,18,35,0.92);")
+        self.setFixedHeight(22)
+        self.setMouseTracking(True)
+        self._hovered = False
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 0, 6, 0)
+        lay.setContentsMargins(8, 0, 6, 0)
         lay.setSpacing(4)
 
-        title = QLabel("📅  선생님 캘린더")
-        title.setStyleSheet("color: rgba(255,255,255,0.85); font-size: 12px; font-weight: bold;")
-        lay.addWidget(title)
+        self._grip = QLabel("☰  선생님 캘린더")
+        lay.addWidget(self._grip)
         lay.addStretch()
 
-        self._pin_btn = self._make_btn("📌", "항상 위에 고정", self._win.toggle_pin)
-        lay.addWidget(self._pin_btn)
-        lay.addWidget(self._make_btn("—", "트레이로 숨기기", self._win.hide))
-        lay.addWidget(self._make_btn("✕", "종료", QApplication.quit))
+        self._pin_btn = self._make_btn("\U0001F4CC", "항상 위에 고정", self._win.toggle_pin)
+        self._buttons = [
+            self._pin_btn,
+            self._make_btn("—", "숨기기", self._win.hide),
+            self._make_btn("✕", "종료", QApplication.quit),
+        ]
+        for b in self._buttons:
+            lay.addWidget(b)
+
+        self._apply_style(False)
 
     def _make_btn(self, text, tip, slot):
         b = QPushButton(text)
         b.setToolTip(tip)
-        b.setFixedSize(26, 22)
+        b.setFixedSize(24, 18)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
-        b.setStyleSheet("""
-            QPushButton { background: transparent; border: none; color: rgba(255,255,255,0.7);
-                          font-size: 13px; border-radius: 5px; }
-            QPushButton:hover { background: rgba(255,255,255,0.15); color: white; }
-        """)
+        b.setStyleSheet(
+            "QPushButton{background:transparent;border:none;color:rgba(255,255,255,0.85);"
+            "font-size:11px;border-radius:4px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.25);}"
+        )
         b.clicked.connect(slot)
         return b
 
+    def _apply_style(self, hovered):
+        # 평소: 거의 투명 / 마우스 올리면: 진해지고 버튼 보임
+        if hovered:
+            self.setStyleSheet("background: rgba(10,18,35,0.85);")
+            self._grip.setStyleSheet("color: rgba(255,255,255,0.9); font-size:11px; font-weight:bold;")
+            for b in self._buttons:
+                b.setVisible(True)
+        else:
+            self.setStyleSheet("background: transparent;")
+            self._grip.setStyleSheet("color: rgba(255,255,255,0.0); font-size:11px;")
+            for b in self._buttons:
+                b.setVisible(False)
+
+    def enterEvent(self, e):
+        self._hovered = True
+        self._apply_style(True)
+
+    def leaveEvent(self, e):
+        self._hovered = False
+        self._apply_style(False)
+
     def set_pinned(self, pinned):
         self._pin_btn.setStyleSheet(
-            "QPushButton { background: %s; border: none; color: white; font-size: 13px; border-radius: 5px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.25); }"
-            % ("rgba(59,130,246,0.8)" if pinned else "transparent")
+            "QPushButton{background:%s;border:none;color:white;font-size:11px;border-radius:4px;}"
+            "QPushButton:hover{background:rgba(255,255,255,0.3);}"
+            % ("rgba(59,130,246,0.85)" if pinned else "transparent")
         )
 
-    # 드래그로 창 이동
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self._press = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
@@ -101,16 +126,18 @@ class DragBar(QWidget):
 
     def mouseReleaseEvent(self, e):
         self._press = None
+        self._win.save_geometry()
 
 
-# ── 메인 창 ──────────────────────────────────────────────────────────────
-class CalendarWindow(QWidget):
+# ── 메인 위젯 창 ─────────────────────────────────────────────────────────
+class CalendarWidget(QWidget):
     def __init__(self, url):
         super().__init__()
+        self._settings = QSettings("TeacherCalendar", "widget")
         self._pinned = False
+
         self.setWindowTitle("선생님 캘린더")
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.resize(920, 660)
+        self._apply_flags()
 
         # 영구 프로필 (TODO 등 localStorage 저장 유지)
         profile = QWebEngineProfile("teacher_calendar", self)
@@ -123,8 +150,7 @@ class CalendarWindow(QWidget):
         )
 
         self._view = QWebEngineView()
-        page = QWebEnginePage(profile, self._view)
-        self._view.setPage(page)
+        self._view.setPage(QWebEnginePage(profile, self._view))
         self._view.setUrl(QUrl(url))
 
         self._bar = DragBar(self)
@@ -135,30 +161,54 @@ class CalendarWindow(QWidget):
         root.addWidget(self._bar)
         root.addWidget(self._view, 1)
 
-        # 우하단 크기 조절 그립
         grip = QSizeGrip(self)
-        grip_lay = QHBoxLayout()
-        grip_lay.setContentsMargins(0, 0, 2, 2)
-        grip_lay.addStretch()
-        grip_lay.addWidget(grip)
-        root.addLayout(grip_lay)
+        grow = QHBoxLayout()
+        grow.setContentsMargins(0, 0, 2, 2)
+        grow.addStretch()
+        grow.addWidget(grip)
+        root.addLayout(grow)
+
+        # 저장된 위치/크기 복원
+        geo = self._settings.value("geometry")
+        if geo is not None:
+            self.restoreGeometry(geo)
+        else:
+            self.resize(920, 660)
+            screen = QApplication.primaryScreen().availableGeometry()
+            self.move(screen.right() - 960, screen.bottom() - 720)
+
+    def _apply_flags(self):
+        # 기본: 프레임 없음 + 작업표시줄 안 뜸(Tool) + 항상 바탕화면 위(맨 아래)
+        flags = (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
+        if self._pinned:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags |= Qt.WindowType.WindowStaysOnBottomHint
+        self.setWindowFlags(flags)
 
     def toggle_pin(self):
         self._pinned = not self._pinned
-        flags = Qt.WindowType.FramelessWindowHint
-        if self._pinned:
-            flags |= Qt.WindowType.WindowStaysOnTopHint
-        self.setWindowFlags(flags)
+        self._apply_flags()
         self._bar.set_pinned(self._pinned)
-        self.show()  # 플래그 변경 후 다시 표시 필요
+        self.show()  # 플래그 변경 후 재표시 필요
 
     def toggle_visible(self):
         if self.isVisible():
             self.hide()
         else:
             self.show()
-            self.raise_()
-            self.activateWindow()
+            self.lower() if not self._pinned else self.raise_()
+
+    def save_geometry(self):
+        self._settings.setValue("geometry", self.saveGeometry())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.save_geometry()
+
+    def closeEvent(self, e):
+        self.save_geometry()
+        super().closeEvent(e)
 
 
 # ── 트레이 아이콘 ────────────────────────────────────────────────────────
@@ -172,7 +222,7 @@ def make_icon():
     p.drawRoundedRect(4, 4, 56, 56, 14, 14)
     p.setPen(QColor("white"))
     p.setFont(QFont("Segoe UI Emoji", 26))
-    p.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, "📅")
+    p.drawText(px.rect(), Qt.AlignmentFlag.AlignCenter, "\U0001F4C5")
     p.end()
     return QIcon(px)
 
@@ -184,32 +234,27 @@ def main():
 
     if not os.path.exists(os.path.join(APP_DIR, HTML_FILE)):
         from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(None, "오류",
-            f"{HTML_FILE} 파일을 찾을 수 없습니다.\n이 파일은 index.html과 같은 폴더에 있어야 합니다.")
+        QMessageBox.critical(None, "오류", f"{HTML_FILE} 파일을 찾을 수 없습니다.")
         sys.exit(1)
 
     port = find_free_port()
     start_server(port)
-    url = f"http://localhost:{port}/{HTML_FILE}"
-
-    win = CalendarWindow(url)
+    win = CalendarWidget(f"http://localhost:{port}/{HTML_FILE}")
     win.show()
+    win.lower()  # 시작 시 바탕화면 레벨로
 
     tray = QSystemTrayIcon(make_icon(), app)
     tray.setToolTip("선생님 캘린더")
     menu = QMenu()
-    menu.setStyleSheet("""
-        QMenu { background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 4px; }
-        QMenu::item { padding: 7px 22px; border-radius: 5px; font-size: 13px; }
-        QMenu::item:selected { background: #eff6ff; color: #2563eb; }
-    """)
-    a_show = QAction("캘린더 표시 / 숨기기", app)
-    a_show.triggered.connect(win.toggle_visible)
-    menu.addAction(a_show)
+    menu.setStyleSheet(
+        "QMenu{background:white;border:1px solid #e2e8f0;border-radius:8px;padding:4px;}"
+        "QMenu::item{padding:7px 22px;border-radius:5px;font-size:13px;}"
+        "QMenu::item:selected{background:#eff6ff;color:#2563eb;}"
+    )
+    a_show = QAction("표시 / 숨기기", app); a_show.triggered.connect(win.toggle_visible); menu.addAction(a_show)
+    a_pin = QAction("항상 위에 고정 켜기/끄기", app); a_pin.triggered.connect(win.toggle_pin); menu.addAction(a_pin)
     menu.addSeparator()
-    a_quit = QAction("종료", app)
-    a_quit.triggered.connect(app.quit)
-    menu.addAction(a_quit)
+    a_quit = QAction("종료", app); a_quit.triggered.connect(app.quit); menu.addAction(a_quit)
     tray.setContextMenu(menu)
     tray.activated.connect(
         lambda r: win.toggle_visible() if r == QSystemTrayIcon.ActivationReason.Trigger else None
