@@ -1,7 +1,2 @@
-' 더블클릭하면 검은 창 없이 캘린더가 바로 실행됩니다
-Dim fso, dir, ws
-Set fso = CreateObject("Scripting.FileSystemObject")
-dir = fso.GetParentFolderName(WScript.ScriptFullName)
-Set ws = CreateObject("WScript.Shell")
-ws.CurrentDirectory = dir
-ws.Run "pythonw """ & dir & "\desktop_app.py""", 0, False
+' Double-click to start the calendar silently (no console window)
+CreateObject("WScript.Shell").Run "pythonw """ & Replace(WScript.ScriptFullName, "start_silent.vbs", "desktop_app.py") & """", 0, False
