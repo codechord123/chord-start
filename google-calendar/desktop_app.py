@@ -177,6 +177,31 @@ class DragBar(QWidget):
         self._win.save_geometry()
 
 
+# ── Google OAuth 팝업 핸들러 ──────────────────────────────────────────────
+class _CalendarPage(QWebEnginePage):
+    """signInWithPopup 이 여는 구글 로그인 팝업을 별도 창으로 받아줌."""
+    _popups: list = []
+
+    def __init__(self, profile, parent=None):
+        super().__init__(profile, parent)
+
+    def createWindow(self, window_type):
+        popup = QWebEngineView()
+        popup.setWindowTitle("Google 로그인")
+        popup.setWindowFlags(
+            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
+        )
+        popup.resize(480, 640)
+        popup.show()
+        _CalendarPage._popups.append(popup)   # GC 방지
+        page = _CalendarPage(self.profile(), popup)
+        popup.setPage(page)
+        # 팝업이 닫히면 목록에서 제거
+        popup.destroyed.connect(lambda: _CalendarPage._popups.remove(popup)
+                                if popup in _CalendarPage._popups else None)
+        return page
+
+
 # ── 메인 위젯 창 ─────────────────────────────────────────────────────────
 class CalendarWidget(QWidget):
     def __init__(self, url):
@@ -200,7 +225,7 @@ class CalendarWidget(QWidget):
         )
 
         self._view = QWebEngineView()
-        self._view.setPage(QWebEnginePage(profile, self._view))
+        self._view.setPage(_CalendarPage(profile, self._view))
         self._view.setUrl(QUrl(url))
 
         self._bar = DragBar(self)
