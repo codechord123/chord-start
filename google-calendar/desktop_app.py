@@ -223,6 +223,12 @@ class CalendarWidget(QWidget):
         profile.setPersistentCookiesPolicy(
             QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
         )
+        # Google이 임베디드 웹뷰로 OAuth를 차단(disallowed_useragent)하지 않도록
+        # 일반 데스크톱 Chrome User-Agent 로 위장한다.
+        profile.setHttpUserAgent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
 
         self._view = QWebEngineView()
         self._view.setPage(_CalendarPage(profile, self._view))

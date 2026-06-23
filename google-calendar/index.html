@@ -1409,6 +1409,12 @@ function initFirebase() {
         fbAuth = firebase.auth();
         fbDb = firebase.firestore();
         fbStorage = firebase.storage();
+        // 로그인 상태를 로컬에 영구 저장 (재시작해도 유지)
+        fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
+        // 리디렉션 로그인에서 돌아왔을 때 결과/에러 처리
+        fbAuth.getRedirectResult()
+            .then(res => { if (res && res.user) showToast('게시판에 로그인되었습니다.'); })
+            .catch(err => showToast('로그인 실패: ' + (err.message || err.code)));
         fbAuth.onAuthStateChanged(user => {
             boardUser = user;
             renderBoardAuth();
@@ -1420,8 +1426,14 @@ function initFirebase() {
 
 function boardSignIn() {
     if (!fbAuth) return;
-    fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider())
-        .catch(e => showToast('로그인 실패: ' + e.message));
+    const provider = new firebase.auth.GoogleAuthProvider();
+    // 데스크톱 웹뷰(랜덤 localhost 포트)에서는 팝업이 'no registered origin'으로
+    // 막히므로, 리디렉션 방식을 우선 사용한다. 실패 시 팝업으로 폴백.
+    fbAuth.signInWithRedirect(provider).catch(err => {
+        console.warn('redirect 로그인 실패, 팝업으로 재시도:', err);
+        fbAuth.signInWithPopup(provider)
+            .catch(e => showToast('로그인 실패: ' + e.message));
+    });
 }
 
 function boardSignOut() {
