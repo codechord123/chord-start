@@ -753,7 +753,7 @@
 const CLIENT_ID = '1084895063676-o8bh1t83tqkhl5g2dqvicsjs1m2igfeu.apps.googleusercontent.com';
 const API_KEY   = 'AIzaSyAyhxfgpz05SYb9-2BuI-86ETPwydChPWI';
 const DISCOVERY = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
-const SCOPES    = 'https://www.googleapis.com/auth/calendar.events';
+const SCOPES    = 'openid email profile https://www.googleapis.com/auth/calendar.events';
 
 const CALENDARS = [
     { id: 'primary',                                            bg: 'rgba(3,155,229,0.85)',   hover: 'rgba(2,136,209,1)' },
@@ -830,6 +830,8 @@ function handleAuthClick() {
         $('refresh-btn').classList.remove('hidden');
         $('add-btn').classList.remove('hidden');
         fetchEvents();
+        // 같은 구글 계정으로 게시판(Firebase)도 함께 로그인
+        signInBoardWithToken(resp.access_token);
     };
     gapi.client.getToken() === null
         ? tokenClient.requestAccessToken({ prompt: 'consent' })
@@ -1424,16 +1426,27 @@ function initFirebase() {
     } catch(e) { console.warn('Firebase init failed:', e); }
 }
 
+// 캘린더와 동일한 구글 로그인을 게시판에도 그대로 사용한다.
+// (이미 검증된 OAuth 클라이언트를 재사용 → 별도 origin 등록 불필요)
 function boardSignIn() {
-    if (!fbAuth) return;
-    const provider = new firebase.auth.GoogleAuthProvider();
-    // 데스크톱 웹뷰(랜덤 localhost 포트)에서는 팝업이 'no registered origin'으로
-    // 막히므로, 리디렉션 방식을 우선 사용한다. 실패 시 팝업으로 폴백.
-    fbAuth.signInWithRedirect(provider).catch(err => {
-        console.warn('redirect 로그인 실패, 팝업으로 재시도:', err);
-        fbAuth.signInWithPopup(provider)
-            .catch(e => showToast('로그인 실패: ' + e.message));
-    });
+    if (!tokenClient || !gapiReady) {
+        showToast('구글 로그인 준비 중입니다. 잠시 후 다시 시도해 주세요.');
+        return;
+    }
+    handleAuthClick();
+}
+
+// 캘린더에서 받은 액세스 토큰으로 Firebase(게시판) 로그인
+async function signInBoardWithToken(accessToken) {
+    if (!fbAuth || !accessToken) return;
+    if (fbAuth.currentUser) return;   // 이미 로그인됨
+    try {
+        const cred = firebase.auth.GoogleAuthProvider.credential(null, accessToken);
+        await fbAuth.signInWithCredential(cred);
+    } catch(e) {
+        console.warn('게시판 로그인 실패:', e);
+        showToast('게시판 로그인 실패: ' + (e.message || e.code));
+    }
 }
 
 function boardSignOut() {
