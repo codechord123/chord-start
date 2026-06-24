@@ -19,6 +19,16 @@
 import os, sys, json, socket, threading, functools, webbrowser, http.server
 from urllib.parse import urlparse, parse_qs, unquote
 
+# ── 흰 화면(white screen) 방지 ────────────────────────────────────────────
+# QtWebEngine 은 일부 Windows GPU/드라이버에서 화면을 못 그리고 하얗게 멈춘다.
+# QApplication / QtWebEngine 을 만들기 "전에" 아래 플래그로 소프트웨어 렌더링을
+# 강제하면 어떤 PC 에서도 안정적으로 그려진다. (캘린더는 GPU 가속이 필요 없음)
+os.environ.setdefault(
+    "QTWEBENGINE_CHROMIUM_FLAGS",
+    "--disable-gpu --disable-gpu-compositing --no-sandbox "
+    "--disable-features=Vulkan --enable-features=OverlayScrollbar")
+os.environ.setdefault("QT_OPENGL", "software")
+
 try:
     from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer, QPoint
     from PyQt6.QtGui  import QIcon, QPixmap, QPainter, QColor, QFont, QAction
@@ -268,6 +278,9 @@ class CalendarWidget(QWidget):
 
         self._view = QWebEngineView()
         self._view.setPage(page)
+        # 로드 실패(흰 화면) 시 한 번 자동 재시도
+        self._reloaded_once = False
+        self._view.loadFinished.connect(self._on_load_finished)
         self._view.setUrl(QUrl(url))
 
         lay = QVBoxLayout(self)
@@ -360,7 +373,14 @@ class CalendarWidget(QWidget):
             self.raise_() if self._pinned else self.lower()
 
     def reload(self):
+        self._reloaded_once = False
         self._view.setUrl(QUrl(self._url))
+
+    def _on_load_finished(self, ok: bool):
+        # 로드 실패(흰 화면/연결 실패) → 1초 뒤 한 번만 자동 재시도
+        if not ok and not self._reloaded_once:
+            self._reloaded_once = True
+            QTimer.singleShot(1000, lambda: self._view.setUrl(QUrl(self._url)))
 
     def save_geo(self):
         self._cfg.setValue("geometry", self.saveGeometry())
