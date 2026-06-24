@@ -26,18 +26,11 @@ from urllib.parse import urlparse, parse_qs, unquote
 #
 #   --no-sandbox          : 제한 환경에서 렌더 프로세스 차단 방지
 #   --no-proxy-server     : 학교/회사 프록시가 localhost 연결을 가로채는 문제 방지
-#   --allow-file-access-from-files : setHtml 로 로드된 페이지의 동일-출처 제한 완화
-#   --disable-web-security : setHtml baseUrl 이 null origin 으로 처리될 때 CORS 우회
-#                            (Python 3.14 + PyQt6 조합에서 발생하는 known issue)
-#   --disable-gpu          ❌ 화면 합성 안 됨 — 사용 금지
-#   --in-process-gpu       ❌ 일부 PC 에서 로드 자체 멈춤 — 사용 금지
+#   --disable-gpu         ❌ 화면 합성 안 됨 — 사용 금지
+#   --in-process-gpu      ❌ 일부 PC 에서 로드 자체 멈춤 — 사용 금지
+#   --disable-web-security ❌ SOP 무력화, OAuth 토큰 탈취 위험 — 사용 금지
 _cf = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-for _flag in [
-    "--no-sandbox",
-    "--no-proxy-server",
-    "--allow-file-access-from-files",
-    "--disable-web-security",
-]:
+for _flag in ["--no-sandbox", "--no-proxy-server"]:
     if _flag not in _cf:
         _cf = (_cf + " " + _flag).strip()
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _cf
@@ -70,7 +63,11 @@ except ImportError as _e:
 #   DATA_DIR   : .webdata(로그인·설정) 를 저장할 쓰기 가능한 곳
 if getattr(sys, 'frozen', False):
     BUNDLE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-    DATA_DIR   = os.path.dirname(sys.executable)
+    # frozen(exe) 빌드는 Program Files 아래에 설치될 수 있어 읽기 전용.
+    # 쓰기 가능한 사용자 폴더(%LOCALAPPDATA%\TeacherCalendar)를 DATA 경로로 사용.
+    DATA_DIR = os.path.join(
+        os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+        "TeacherCalendar")
 else:
     BUNDLE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR   = BUNDLE_DIR
@@ -123,12 +120,13 @@ def _find_workerw():
         shell = _user32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None)
         if shell:
             nxt = _user32.FindWindowExW(None, hwnd, "WorkerW", None)
-            if nxt:
+            # Explorer 재시작 후 HWND가 무효화될 수 있으므로 IsWindow() 검증
+            if nxt and _user32.IsWindow(nxt):
                 workerw.value = nxt
         return True
 
     _user32.EnumWindows(_enum, 0)
-    return workerw.value
+    return workerw.value if _user32.IsWindow(workerw.value) else None
 
 
 # ── 로컬 HTTP 서버 (정적 파일 + OAuth 중계) ──────────────────────────────
@@ -355,7 +353,12 @@ class CalendarWidget(QWidget):
         # 영구 WebEngine 프로파일
         profile = QWebEngineProfile("teacher_cal", self)
         store   = os.path.join(DATA_DIR, ".webdata")
-        os.makedirs(store, exist_ok=True)
+        try:
+            os.makedirs(store, exist_ok=True)
+        except OSError as _e:
+            wlog("[경고] .webdata 폴더 생성 실패 (권한?): %r" % _e)
+            store = os.path.join(os.path.expanduser("~"), ".teacher_cal_webdata")
+            os.makedirs(store, exist_ok=True)
         profile.setPersistentStoragePath(store)
         profile.setCachePath(os.path.join(store, "cache"))
         profile.setPersistentCookiesPolicy(
@@ -414,6 +417,19 @@ class CalendarWidget(QWidget):
         f |= (Qt.WindowType.WindowStaysOnTopHint if self._pinned
               else Qt.WindowType.WindowStaysOnBottomHint)
         self.setWindowFlags(f)
+
+    # Win11 DWM 클릭 시 위젯이 다른 창 위로 올라오는 Z-order 경쟁 방지
+    def nativeEvent(self, event_type, message):
+        # WM_MOUSEACTIVATE(0x0021) → MA_NOACTIVATE(3) 반환 (활성화 없이 클릭 전달)
+        if HAS_WIN32 and not self._pinned:
+            try:
+                import ctypes
+                msg = ctypes.cast(int(message), ctypes.POINTER(ctypes.c_uint32))
+                if msg[0] == 0x0021:   # WM_MOUSEACTIVATE
+                    return True, 3     # MA_NOACTIVATE
+            except Exception:
+                pass
+        return super().nativeEvent(event_type, message)
 
     # ── 오버레이 위치 갱신 ────────────────────────────────────────────
     def resizeEvent(self, e):
@@ -592,18 +608,20 @@ class CalendarWidget(QWidget):
 class _CalPage(QWebEnginePage):
     _popups: list = []
 
+    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        from PyQt6.QtWebEngineCore import QWebEnginePage as _P
+        # target='_blank' 또는 외부 URL 클릭 → 시스템 기본 브라우저로 열기
+        if nav_type == _P.NavigationType.NavigationTypeLinkClicked:
+            u = url.toString()
+            if not u.startswith(("http://localhost:", "about:", "qrc:")):
+                webbrowser.open(u)
+                return False
+        return True
+
     def createWindow(self, _type):
-        v = QWebEngineView()
-        v.setWindowTitle("Google 로그인")
-        v.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
-        v.resize(480, 640)
-        v.show()
-        _CalPage._popups.append(v)
-        pg = _CalPage(self.profile(), v)
-        v.setPage(pg)
-        v.destroyed.connect(lambda: _CalPage._popups.remove(v)
-                            if v in _CalPage._popups else None)
-        return pg
+        # 팝업 요청도 시스템 브라우저로 전달 (WebEngine 내부 팝업 방지)
+        # url은 acceptNavigationRequest 에서 처리되므로 빈 뷰는 만들지 않는다.
+        return None
 
 
 # ── 설정 창 ──────────────────────────────────────────────────────────────

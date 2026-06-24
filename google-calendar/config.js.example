@@ -1,0 +1,37 @@
+// ──────────────────────────────────────────────────────────────
+//  선생님 캘린더 — 인증 설정 파일 (예제)
+//
+//  이 파일을 config.js 로 복사한 뒤, 아래 값을 실제 값으로 바꾸세요.
+//  config.js 는 .gitignore 에 포함되어 있으므로 저장소에 올라가지 않습니다.
+//
+//  값 얻는 방법:
+//  1. Google Cloud Console → APIs & Services → Credentials
+//     · CLIENT_ID : OAuth 2.0 클라이언트 ID  (Web application 유형)
+//     · API_KEY   : API 키
+//  2. Firebase Console → 프로젝트 설정 → 앱 → 내 앱의 구성 스니펫
+//     → 아래 FIREBASE_CONFIG 에 그대로 붙여넣기
+//  3. CALENDARS : 표시할 구글 캘린더 ID 목록
+//     · calendarId "primary" = 로그인한 계정의 기본 캘린더
+//     · 다른 캘린더 ID 는 Google Calendar 설정 → 내 캘린더 → [캘린더명]
+//       → '캘린더 통합' 섹션 → 캘린더 ID
+// ──────────────────────────────────────────────────────────────
+
+const CLIENT_ID = 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com';
+const API_KEY   = 'YOUR_GOOGLE_API_KEY';
+
+const FIREBASE_CONFIG = {
+    apiKey:            'YOUR_FIREBASE_API_KEY',
+    authDomain:        'YOUR_PROJECT_ID.firebaseapp.com',
+    projectId:         'YOUR_PROJECT_ID',
+    storageBucket:     'YOUR_PROJECT_ID.appspot.com',
+    messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
+    appId:             'YOUR_APP_ID',
+};
+
+// 표시할 캘린더 목록
+// color 는 CSS 색상 문자열 (없으면 Google 기본색 사용)
+const CALENDARS = [
+    { id: 'primary' },
+    // { id: 'ko.south_korea#holiday@group.v.calendar.google.com', color: '#e74c3c' },
+    // { id: 'example@group.calendar.google.com', color: '#3498db' },
+];

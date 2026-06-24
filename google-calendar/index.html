@@ -754,33 +754,24 @@
     </div>
 </div>
 
+<!-- config.js 는 git 에 포함되지 않는 별도 파일입니다.
+     config.js.example 을 복사해 config.js 로 만들고 값을 입력하세요.
+     install.py 가 최초 실행 시 자동으로 안내합니다. -->
+<script src="/config.js"></script>
 <script>
-// ═══════════════════════════════════════════════════════
-//  [필수] 구글 클라우드 콘솔 API 키 & 클라이언트 ID 입력
-// ═══════════════════════════════════════════════════════
-const CLIENT_ID = '1084895063676-5dogrom5ihibchgq1lqosglrlnt13igc.apps.googleusercontent.com';
-const API_KEY   = 'AIzaSyAyhxfgpz05SYb9-2BuI-86ETPwydChPWI';
+// config.js 로드 실패 시 안내 (CLIENT_ID 미정의)
+if (typeof CLIENT_ID === 'undefined') {
+    document.addEventListener('DOMContentLoaded', function() {
+        document.body.innerHTML =
+            '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0f172a;color:#e2e8f0;font-family:sans-serif;text-align:center;padding:24px">' +
+            '<div><h2 style="color:#fbbf24">⚙ 초기 설정 필요</h2>' +
+            '<p>config.js 파일이 없습니다.</p>' +
+            '<p>같은 폴더의 <b>config.js.example</b> 을 <b>config.js</b> 로 복사하고<br>' +
+            'Google/Firebase 인증 정보를 입력한 뒤 위젯을 재시작하세요.</p></div></div>';
+    });
+}
 const DISCOVERY = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
 const SCOPES    = 'openid email profile https://www.googleapis.com/auth/calendar.events';
-
-const CALENDARS = [
-    { id: 'primary',                                            bg: 'rgba(3,155,229,0.85)',   hover: 'rgba(2,136,209,1)' },
-    { id: 'classroom116374120094529822749@group.calendar.google.com', bg: 'rgba(239,68,68,0.85)',   hover: 'rgba(220,38,38,1)' },
-];
-
-// ═══════════════════════════════════════════════════════
-//  [게시판] Firebase 설정 — Firebase 콘솔에서 값을 복사해 입력
-//  https://console.firebase.google.com/ → 프로젝트 → 웹 앱 추가
-//  값을 비워두면 게시판 기능만 비활성화됩니다.
-// ═══════════════════════════════════════════════════════
-const FIREBASE_CONFIG = {
-    apiKey:            "AIzaSyCRajHXD9_KlfvJQb-GtUr8NSk7ce0uad0",
-    authDomain:        "to-do-cal-6e835.firebaseapp.com",
-    projectId:         "to-do-cal-6e835",
-    storageBucket:     "to-do-cal-6e835.firebasestorage.app",
-    messagingSenderId: "460218654402",
-    appId:             "1:460218654402:web:2a88939c3866b931bee55b"
-};
 
 // ── 게시판 상태 ─────────────────────────────────────────
 let fbAuth = null, fbDb = null, fbStorage = null;
@@ -942,9 +933,12 @@ async function fetchEvents() {
                     return { id: ev.id, calendarId: cal.id, title: ev.summary || '(제목 없음)', start, end, allDay, bg: cal.bg, hover: cal.hover };
                 });
                 all = all.concat(items);
-            } catch(e) { console.warn('Calendar fetch failed:', cal.id); }
+            } catch(e) {
+                console.warn('Calendar fetch failed:', cal.id, e);
+                showToast('⚠ 캘린더 동기화 실패 — 인터넷 연결 확인', 4000);
+            }
         }
-        eventsList = all;
+        eventsList = all.length ? all : eventsList; // 실패 시 기존 목록 유지
         const now = new Date();
         statusEl.textContent = `✅ ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')} 동기화 완료`;
         renderView();
@@ -1185,7 +1179,11 @@ function makeEventPill(ev) {
     if (!ev.allDay) {
         const h = ev.start.getHours(), mn = String(ev.start.getMinutes()).padStart(2,'0');
         const t = (h<12?'오전':'오후') + ' ' + (h%12||12) + (mn!=='00'?':'+mn:'');
-        pill.innerHTML = `<span style="opacity:.8;margin-right:2px;">${t}</span>${ev.title}`;
+        const span = document.createElement('span');
+        span.style.cssText = 'opacity:.8;margin-right:2px;';
+        span.textContent = t;
+        pill.appendChild(span);
+        pill.appendChild(document.createTextNode(ev.title));
     } else {
         pill.textContent = ev.title;
     }
@@ -1238,7 +1236,7 @@ function resizeWidget(delta) {
 // ══════════════════════════════════════════════════════════
 //  TODO 리스트
 // ══════════════════════════════════════════════════════════
-const TODO_KEY = 'teacher_todos';
+const TODO_KEY = 'chord_calendar_todos_v1';
 let todos = [];
 let todoFilter = 'all';
 let todoTag = null;          // 현재 선택된 태그 필터 (null = 전체)

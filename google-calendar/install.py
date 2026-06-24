@@ -27,9 +27,11 @@ def log(msg=""):
     print(msg, flush=True)
 
 
-HERE   = os.path.dirname(os.path.abspath(__file__))
-SCRIPT = os.path.join(HERE, "desktop_app.py")
-HTML   = os.path.join(HERE, "index.html")
+HERE        = os.path.dirname(os.path.abspath(__file__))
+SCRIPT      = os.path.join(HERE, "desktop_app.py")
+HTML        = os.path.join(HERE, "index.html")
+CONFIG_JS   = os.path.join(HERE, "config.js")
+CONFIG_EXAM = os.path.join(HERE, "config.js.example")
 
 # ── Python 3.12 자동 설치 지원 ───────────────────────────────────────────────
 _PY312_VER     = "3.12.9"
@@ -252,9 +254,11 @@ def pythonw_path():
 
 
 def startup_dir():
-    return os.path.join(
-        os.environ.get("APPDATA", ""),
-        "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        log("[경고] APPDATA 환경변수가 없습니다. 시작프로그램 등록을 건너뜁니다.")
+        return None
+    return os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
 
 def pip_install(*pkgs):
@@ -296,24 +300,64 @@ def main():
             log("       이 폴더 안의 모든 파일을 함께 복사했는지 확인하세요.")
             return 1
 
-    startup = startup_dir()
+    # config.js 확인 (Google/Firebase 인증 정보)
+    if not os.path.exists(CONFIG_JS):
+        log()
+        log("=" * 60)
+        log("  [설정 필요] config.js 파일이 없습니다!")
+        log()
+        log("  구글 캘린더·Firebase 연동을 위해 인증 정보가 필요합니다.")
+        log()
+        if os.path.exists(CONFIG_EXAM):
+            log("  자동으로 config.js.example 을 config.js 로 복사합니다.")
+            import shutil
+            try:
+                shutil.copy2(CONFIG_EXAM, CONFIG_JS)
+                log(f"  복사 완료: {CONFIG_JS}")
+            except Exception as _e:
+                log(f"  [경고] 자동 복사 실패: {_e}")
+                log(f"         수동으로 config.js.example 을 config.js 로 복사하세요.")
+        else:
+            log("  config.js.example 도 없습니다. 설치 파일이 온전한지 확인하세요.")
+        log()
+        log("  config.js 를 열어 아래 값을 실제 값으로 바꾸세요:")
+        log("    CLIENT_ID      — Google OAuth 클라이언트 ID")
+        log("    API_KEY        — Google API 키")
+        log("    FIREBASE_CONFIG — Firebase 프로젝트 설정")
+        log("    CALENDARS      — 표시할 캘린더 ID 목록")
+        log()
+        log("  설정 후 install.bat 을 다시 실행하거나,")
+        log("  값을 입력했다면 지금 바로 계속할 수 있습니다.")
+        log("=" * 60)
+        log()
+        ans = input("  config.js 값 입력 후 계속하려면 Enter, 종료하려면 Q: ").strip().lower()
+        if ans in ("q", "quit", "exit"):
+            return 0
+        if not os.path.exists(CONFIG_JS):
+            log("[오류] config.js 가 아직 없습니다. 설정 후 install.bat 을 다시 실행하세요.")
+            return 1
+        log()
+
+    startup = startup_dir()   # None 이면 APPDATA 없음
 
     # ── 1) 기존 버전 정리 ───────────────────────────────────────────────
     log("[1/4] 기존 버전 정리 중...")
     quiet(["taskkill", "/f", "/im", "TeacherCalendar.exe"])
+    # 현재 사용자의 desktop_app.py 실행 중인 pythonw 프로세스만 종료
     quiet([
         "powershell", "-NoProfile", "-Command",
         "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
         "Where-Object { $_.CommandLine -like '*desktop_app.py*' } | "
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
         "-ErrorAction SilentlyContinue }"])
-    for name in ("TeacherCalendar.lnk", "TeacherCalendar.vbs"):
-        try:
-            p = os.path.join(startup, name)
-            if os.path.exists(p):
-                os.remove(p)
-        except Exception:
-            pass
+    if startup:
+        for name in ("TeacherCalendar.lnk", "TeacherCalendar.vbs"):
+            try:
+                p = os.path.join(startup, name)
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
     log("      완료.")
     log()
 
@@ -362,18 +406,21 @@ def main():
     # ── 4) 시작프로그램 등록 + 즉시 실행 ───────────────────────────────
     log("[4/4] 시작프로그램 등록 중...")
     pyw = pythonw_path()
-    try:
-        os.makedirs(startup, exist_ok=True)
-        vbs = os.path.join(startup, "TeacherCalendar.vbs")
-        vbs_body = (
-            'Set WshShell = CreateObject("WScript.Shell")\r\n'
-            f'WshShell.Run """{pyw}"" ""{SCRIPT}""", 0, False\r\n')
-        with open(vbs, "w", encoding="utf-8") as f:
-            f.write(vbs_body)
-        log(f"      등록됨: {vbs}")
-    except Exception as e:
-        log(f"[경고] 시작프로그램 등록에 실패했습니다: {e}")
-        log("       위젯은 지금 실행되지만, 재부팅 시 자동 실행은 안 될 수 있어요.")
+    if startup:
+        try:
+            os.makedirs(startup, exist_ok=True)
+            vbs = os.path.join(startup, "TeacherCalendar.vbs")
+            vbs_body = (
+                'Set WshShell = CreateObject("WScript.Shell")\r\n'
+                f'WshShell.Run """{pyw}"" ""{SCRIPT}""", 0, False\r\n')
+            with open(vbs, "w", encoding="utf-8") as f:
+                f.write(vbs_body)
+            log(f"      등록됨: {vbs}")
+        except Exception as e:
+            log(f"[경고] 시작프로그램 등록에 실패했습니다: {e}")
+            log("       위젯은 지금 실행되지만, 재부팅 시 자동 실행은 안 될 수 있어요.")
+    else:
+        log("[경고] APPDATA 없음 — 시작프로그램 등록 건너뜀.")
     log()
 
     log("위젯을 실행합니다...")

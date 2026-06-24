@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 chcp 65001 >nul 2>nul
 title Teacher Calendar Installer
 cd /d "%~dp0"
@@ -12,7 +13,7 @@ rem --- Python 3.12 가 이미 설치돼 있으면 우선 사용 ---
 py -3.12 --version >nul 2>nul
 if not errorlevel 1 (
     py -3.12 "%~dp0install.py"
-    set "RC=%ERRORLEVEL%"
+    set "RC=!ERRORLEVEL!"
     goto DONE
 )
 
@@ -24,20 +25,20 @@ if not defined PY (
 )
 if not defined PY goto NOPY
 
-%PY% "%~dp0install.py"
-set "RC=%ERRORLEVEL%"
+!PY! "%~dp0install.py"
+set "RC=!ERRORLEVEL!"
 goto DONE
 
 :DONE
 echo.
-if "%RC%"=="0" (
+if "!RC!"=="0" (
     echo Installation finished. You may close this window.
 ) else (
     echo [ERROR] Installation did not complete. See messages above.
 )
 echo.
 pause
-exit /b %RC%
+exit /b !RC!
 
 :NOPY
 echo [ERROR] Python not found on this PC.
