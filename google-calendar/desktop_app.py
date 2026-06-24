@@ -1,30 +1,34 @@
 """
-선생님 캘린더 - 데스크탑 위젯
-index.html (구글 캘린더 + TODO)을 바탕화면에 얹히는 위젯으로 띄웁니다.
+선생님 캘린더 — 데스크탑 위젯
+─────────────────────────────────────────────────────────────────────
+실행:   pythonw desktop_app.py
+필요:   pip install PyQt6 PyQt6-WebEngine
+선택:   pip install pywin32   (WorkerW 벽지 박기 기능)
 
-실행: pythonw desktop_app.py
-필요: pip install PyQt6 PyQt6-WebEngine
-선택: pip install pywin32  (바탕화면에 진짜로 박는 위젯모드)
+구조
+  ┌──────────────────────────────────────────────────────┐
+  │ CalendarWidget   (위젯 본체, 바탕화면에 투명으로 표시) │
+  │  - 버튼 전혀 없음, 상단 드래그 핸들만 존재             │
+  │  - 트레이 아이콘(📅)만 작업표시줄에 표시               │
+  ├──────────────────────────────────────────────────────┤
+  │ SettingsWindow   (설정 프로그램 창, 별도 창)           │
+  │  - 트레이 아이콘 클릭 → 설정창 열림                    │
+  │  - 투명도·크기·위치·항상위·새로고침·종료 제어            │
+  └──────────────────────────────────────────────────────┘
 """
-import os
-import sys
-import json
-import socket
-import threading
-import functools
-import webbrowser
-import http.server
+import os, sys, json, socket, threading, functools, webbrowser, http.server
 from urllib.parse import urlparse, parse_qs, unquote
 
 try:
-    from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer
-    from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
+    from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer, QPoint
+    from PyQt6.QtGui  import QIcon, QPixmap, QPainter, QColor, QFont, QAction
     from PyQt6.QtWidgets import (
         QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-        QPushButton, QSizeGrip, QSystemTrayIcon, QMenu, QCheckBox, QFrame
+        QPushButton, QSizeGrip, QSystemTrayIcon, QMenu, QCheckBox,
+        QFrame, QSlider, QSpacerItem, QSizePolicy
     )
     from PyQt6.QtWebEngineWidgets import QWebEngineView
-    from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
+    from PyQt6.QtWebEngineCore    import QWebEngineProfile, QWebEnginePage
 except ImportError as _e:
     try:
         import tkinter as _tk, tkinter.messagebox as _mb
@@ -36,35 +40,30 @@ except ImportError as _e:
         pass
     sys.exit(1)
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DIR   = os.path.dirname(os.path.abspath(__file__))
 HTML_FILE = 'index.html'
 
-# ── 바탕화면 임베딩 (Lively/Wallpaper Engine 방식의 WorkerW 기법) ──────────
-# pywin32 가 있으면 진짜 위젯처럼 바탕화면에 박고, 없으면 폴백한다.
+# ── Windows WorkerW (벽지 레이어 임베딩) ──────────────────────────────────
 try:
     import ctypes
     from ctypes import wintypes
-    _user32 = ctypes.windll.user32
+    _user32  = ctypes.windll.user32
     HAS_WIN32 = True
 except Exception:
     HAS_WIN32 = False
 
 
-def find_workerw():
-    """바탕화면 그림 위 / 아이콘 아래에 있는 WorkerW 핸들을 찾는다."""
+def _find_workerw():
     if not HAS_WIN32:
         return None
-    # Progman 에게 WorkerW 레이어 생성을 요청
     progman = _user32.FindWindowW("Progman", None)
     if not progman:
         return None
     _user32.SendMessageTimeoutW(progman, 0x052C, 0, 0, 0x0000, 1000, None)
-
     workerw = ctypes.c_void_p(0)
 
     @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-    def _enum(hwnd, lparam):
-        # SHELLDLL_DefView(바탕화면 아이콘 호스트)를 자식으로 가진 형제 WorkerW 탐색
+    def _enum(hwnd, _lp):
         shell = _user32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None)
         if shell:
             nxt = _user32.FindWindowExW(None, hwnd, "WorkerW", None)
@@ -76,285 +75,312 @@ def find_workerw():
     return workerw.value
 
 
-# ── 로컬 웹서버 (구글 로그인 origin 문제 해결) ────────────────────────────
-def find_free_port(preferred=8765):
-    for port in [preferred, 8766, 8767, 8768, 8770, 8800]:
+# ── 로컬 HTTP 서버 (정적 파일 + OAuth 중계) ──────────────────────────────
+def _find_free_port():
+    for p in [8765, 8766, 8767, 8768, 8770, 8800]:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(('127.0.0.1', port)) != 0:
-                return port
-    return preferred
+            if s.connect_ex(('127.0.0.1', p)) != 0:
+                return p
+    return 8765
 
 
-# 외부 브라우저 로그인으로 받은 토큰을 잠깐 보관하는 곳 (위젯이 폴링으로 가져감)
-_oauth_holder = {"token": None}
+_oauth_token: dict | None = None   # 외부 브라우저에서 받은 토큰 임시 보관
 
-# 외부 브라우저에서 구글 로그인이 끝나면 표시되는 콜백 페이지.
-# URL #fragment 의 access_token 을 읽어 로컬 서버로 넘긴 뒤 창을 닫으라고 안내한다.
+# 구글 OAuth implicit flow 콜백 — URL hash 에서 토큰 파싱 후 서버로 POST
 _CALLBACK_HTML = """<!doctype html><html lang='ko'><head><meta charset='utf-8'>
 <title>로그인 완료</title>
 <style>
- body{font-family:'Malgun Gothic','Noto Sans KR',sans-serif;background:#0f172a;color:#e2e8f0;
+ body{font-family:'Malgun Gothic',sans-serif;background:#0f172a;color:#e2e8f0;
       display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
- .card{text-align:center;padding:44px 56px;background:#1e293b;border-radius:18px;
-       box-shadow:0 20px 60px rgba(0,0,0,.5)}
- h1{font-size:22px;margin:0 0 8px} p{color:#94a3b8;margin:0}
+ .card{text-align:center;padding:40px 52px;background:#1e293b;
+       border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+ h1{font-size:20px;margin:0 0 8px} p{color:#94a3b8;margin:0;font-size:14px}
+ .ok{color:#34d399} .err{color:#f87171}
 </style></head><body>
 <div class='card'><h1 id='m'>로그인 처리 중…</h1><p id='s'>잠시만 기다려 주세요.</p></div>
 <script>
 (function(){
-  var p = new URLSearchParams(location.hash.substring(1));
-  var tok = p.get('access_token');
-  var m = document.getElementById('m'), s = document.getElementById('s');
-  if(!tok){ m.textContent='⚠️ 로그인 실패'; s.textContent='위젯에서 다시 시도해 주세요.'; return; }
-  fetch('/oauth2token',{method:'POST',headers:{'Content-Type':'application/json'},
+  var p=new URLSearchParams(location.hash.slice(1));
+  var tok=p.get('access_token');
+  var m=$('m'),s=$('s');
+  function $(_id){return document.getElementById(_id);}
+  if(!tok){m.innerHTML='<span class=err>⚠ 로그인 실패</span>';
+           s.textContent='위젯에서 다시 시도해 주세요.';return;}
+  fetch('/oauth2token',{method:'POST',
+    headers:{'Content-Type':'application/json'},
     body:JSON.stringify({access_token:tok,expires_in:p.get('expires_in')})})
-   .then(function(){ m.textContent='✅ 로그인 완료';
-     s.textContent='이 창을 닫고 바탕화면 위젯으로 돌아가세요.';
-     setTimeout(function(){ try{window.close();}catch(e){} },1500); })
-   .catch(function(){ m.textContent='연결 오류'; s.textContent='위젯이 실행 중인지 확인하세요.'; });
+  .then(function(){
+    m.innerHTML='<span class=ok>✅ 로그인 완료!</span>';
+    s.textContent='이 창을 닫고 바탕화면 위젯으로 돌아가세요.';
+    setTimeout(function(){try{window.close();}catch(e){}},2000);
+  }).catch(function(){m.innerHTML='<span class=err>연결 오류</span>';
+    s.textContent='위젯이 실행 중인지 확인하세요.';});
 })();
 </script></body></html>"""
 
 
-class AppHandler(http.server.SimpleHTTPRequestHandler):
-    """정적 파일 서빙 + 외부 브라우저 OAuth 중계 엔드포인트."""
-    def log_message(self, *args):
+class _AppHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *_):
         pass
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-        if path == '/oauth2callback':
+        global _oauth_token
+        p = urlparse(self.path)
+        if p.path == '/oauth2callback':
             self._html(_CALLBACK_HTML)
             return
-        if path == '/oauth2open':
-            q = parse_qs(parsed.query)
-            url = unquote(q.get('u', [''])[0])
-            # 구글 인증 주소만 외부 브라우저로 연다 (안전장치)
+        if p.path == '/oauth2open':
+            url = unquote(parse_qs(p.query).get('u', [''])[0])
             if url.startswith('https://accounts.google.com/'):
                 try:
                     webbrowser.open(url)
                 except Exception:
                     pass
-            self._json({"ok": True})
+            self._json({'ok': True})
             return
-        if path == '/oauth2token':
-            tok = _oauth_holder.get("token")
-            _oauth_holder["token"] = None       # 한 번 건네면 비운다
+        if p.path == '/oauth2token':
+            tok = _oauth_token
+            _oauth_token = None
             self._json(tok or {})
             return
-        return super().do_GET()
+        super().do_GET()
 
     def do_POST(self):
+        global _oauth_token
         if urlparse(self.path).path == '/oauth2token':
-            ln = int(self.headers.get('Content-Length', 0) or 0)
-            raw = self.rfile.read(ln) if ln else b'{}'
+            n = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(n) if n else b'{}'
             try:
-                _oauth_holder["token"] = json.loads(raw.decode('utf-8'))
+                _oauth_token = json.loads(raw.decode())
             except Exception:
-                _oauth_holder["token"] = None
-            self._json({"ok": True})
+                _oauth_token = None
+            self._json({'ok': True})
             return
         self.send_error(404)
 
-    def _html(self, html):
-        data = html.encode('utf-8')
+    def _html(self, s):
+        d = s.encode()
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Content-Length', str(len(d)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(d)
 
     def _json(self, obj):
-        data = json.dumps(obj).encode('utf-8')
+        d = json.dumps(obj).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Content-Length', str(len(d)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(d)
 
 
-def start_server(port):
-    handler = functools.partial(AppHandler, directory=APP_DIR)
-    httpd = http.server.ThreadingHTTPServer(('127.0.0.1', port), handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
+def _start_server(port):
+    h = functools.partial(_AppHandler, directory=APP_DIR)
+    s = http.server.ThreadingHTTPServer(('127.0.0.1', port), h)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s
 
 
-# ── 위젯 이동용 드래그 핸들 (버튼 없음 = 순수 위젯) ───────────────────────
-class DragHandle(QWidget):
-    """위젯 상단의 가느다란 이동 영역. 버튼이 전혀 없어 위젯만 보인다.
-    평소엔 투명, 마우스를 올리면 잡는 위치만 살짝 표시한다."""
-    def __init__(self, window):
-        super().__init__(window)
-        self._win = window
-        self._press = None
-        self.setFixedHeight(18)
+# ── 드래그 핸들 (위젯 상단, 투명 — 버튼 전혀 없음) ─────────────────────────
+class _DragHandle(QWidget):
+    def __init__(self, win):
+        super().__init__(win)
+        self._win  = win
+        self._drag = None
+        self.setFixedHeight(20)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
-
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self._dots = QLabel("⠿⠿⠿")
-        self._dots.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addWidget(self._dots)
-        self._apply_style(False)
+        self._dot = QLabel("· · ·")
+        self._dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._dot)
+        self._style(False)
 
-    def _apply_style(self, hovered):
-        if hovered:
-            self.setStyleSheet("background: rgba(10,18,35,0.45); border-top-left-radius:20px; border-top-right-radius:20px;")
-            self._dots.setStyleSheet("color: rgba(255,255,255,0.55); font-size:10px; letter-spacing:2px;")
+    def _style(self, hov):
+        if hov:
+            self.setStyleSheet(
+                "background:rgba(255,255,255,0.08);"
+                "border-radius:20px 20px 0 0;")
+            self._dot.setStyleSheet("color:rgba(255,255,255,.45);font-size:13px;letter-spacing:5px;")
         else:
-            self.setStyleSheet("background: transparent;")
-            self._dots.setStyleSheet("color: rgba(255,255,255,0.0); font-size:10px;")
+            self.setStyleSheet("background:transparent;")
+            self._dot.setStyleSheet("color:rgba(255,255,255,0);font-size:13px;")
 
-    def enterEvent(self, e):
-        self._apply_style(True)
-
-    def leaveEvent(self, e):
-        self._apply_style(False)
-
-    # 임베드 호환용 (설정에서 핀 상태를 알려도 무시) — 위젯엔 버튼이 없다
-    def set_pinned(self, pinned):
-        pass
+    def enterEvent(self, _): self._style(True)
+    def leaveEvent(self, _): self._style(False)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            self._press = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+            self._drag = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, e):
-        if self._press and e.buttons() & Qt.MouseButton.LeftButton:
-            self._win.move(e.globalPosition().toPoint() - self._press)
+        if self._drag and (e.buttons() & Qt.MouseButton.LeftButton):
+            self._win.move(e.globalPosition().toPoint() - self._drag)
 
-    def mouseReleaseEvent(self, e):
-        self._press = None
+    def mouseReleaseEvent(self, _):
+        self._drag = None
         self.setCursor(Qt.CursorShape.OpenHandCursor)
-        self._win.save_geometry()
+        self._win.save_geo()
 
 
-# ── Google OAuth 팝업 핸들러 ──────────────────────────────────────────────
-class _CalendarPage(QWebEnginePage):
-    """signInWithPopup 이 여는 구글 로그인 팝업을 별도 창으로 받아줌."""
-    _popups: list = []
-
-    def __init__(self, profile, parent=None):
-        super().__init__(profile, parent)
-
-    def createWindow(self, window_type):
-        popup = QWebEngineView()
-        popup.setWindowTitle("Google 로그인")
-        popup.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
-        )
-        popup.resize(480, 640)
-        popup.show()
-        _CalendarPage._popups.append(popup)   # GC 방지
-        page = _CalendarPage(self.profile(), popup)
-        popup.setPage(page)
-        # 팝업이 닫히면 목록에서 제거
-        popup.destroyed.connect(lambda: _CalendarPage._popups.remove(popup)
-                                if popup in _CalendarPage._popups else None)
-        return page
-
-
-# ── 메인 위젯 창 ─────────────────────────────────────────────────────────
+# ── 위젯 본체 ───────────────────────────────────────────────────────────────
 class CalendarWidget(QWidget):
-    def __init__(self, url):
+    def __init__(self, url: str):
         super().__init__()
-        self._url = url
-        self._settings = QSettings("TeacherCalendar", "widget")
-        self._pinned = False
-        self._embedded = False   # 바탕화면에 박혀 있는가
+        self._url      = url
+        self._cfg      = QSettings("TeacherCalendar", "widget")
+        self._pinned   = False
+        self._embedded = False
 
         self.setWindowTitle("선생님 캘린더")
         self._apply_flags()
-        # 창 배경 투명 → 바탕화면이 비쳐 '프로그램 창'이 아닌 '위젯'처럼 보인다
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # 영구 프로필 — TODO 등 localStorage 저장 유지
-        profile = QWebEngineProfile("teacher_calendar", self)
-        storage = os.path.join(APP_DIR, ".webdata")
-        os.makedirs(storage, exist_ok=True)
-        profile.setPersistentStoragePath(storage)
-        profile.setCachePath(os.path.join(storage, "cache"))
+        # 영구 WebEngine 프로파일
+        profile = QWebEngineProfile("teacher_cal", self)
+        store   = os.path.join(APP_DIR, ".webdata")
+        os.makedirs(store, exist_ok=True)
+        profile.setPersistentStoragePath(store)
+        profile.setCachePath(os.path.join(store, "cache"))
         profile.setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
-        )
-        # Google이 임베디드 웹뷰로 OAuth를 차단(disallowed_useragent)하지 않도록
-        # 일반 데스크톱 Chrome User-Agent 로 위장한다.
+            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
+        # Chrome UA — 임베디드 웹뷰 차단 우회
         profile.setHttpUserAgent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+        page = _CalPage(profile, None)
+        page.setBackgroundColor(QColor(0, 0, 0, 0))
 
         self._view = QWebEngineView()
-        page = _CalendarPage(profile, self._view)
-        # 웹뷰 배경도 투명 처리 (기본은 흰색 → 둥근 모서리 밖이 흰 사각형으로 남음)
-        page.setBackgroundColor(QColor(Qt.GlobalColor.transparent))
         self._view.setPage(page)
-        self._view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._view.setStyleSheet("background: transparent;")
+        self._view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._view.setStyleSheet("background:transparent;")
         self._view.setUrl(QUrl(url))
 
-        # 웹뷰가 창 전체를 채우고, 드래그바·크기조절 그립은 그 위에 겹쳐(오버레이)
-        # 떠 있게 한다 → 둥근 카드가 창을 꽉 채워 '프로그램 창'이 아닌 위젯처럼 보인다.
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        root.addWidget(self._view, 1)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self._view)
 
-        self._bar = DragHandle(self)
-        self._bar.setParent(self)
-        self._bar.raise_()
+        # 오버레이: 드래그 핸들(상단) + 크기 그립(우하단)
+        self._handle = _DragHandle(self)
+        self._grip   = QSizeGrip(self)
+        self._grip.setStyleSheet("background:transparent;")
 
-        self._grip = QSizeGrip(self)
-        self._grip.setParent(self)
-        self._grip.raise_()
-
-        # 저장된 위치/크기 복원 (없으면 화면 가운데에 배치)
-        geo = self._settings.value("geometry")
-        if geo is not None:
+        # 저장된 크기/위치 복원, 없으면 화면 가운데
+        geo = self._cfg.value("geometry")
+        if geo:
             self.restoreGeometry(geo)
         else:
             self.resize(920, 660)
-            self.center_on_screen()
+            self._center()
 
+        # 저장된 불투명도 복원
+        op = float(self._cfg.value("opacity", 1.0))
+        self.setWindowOpacity(op)
+
+    # ── 창 플래그 ─────────────────────────────────────────────────────
     def _apply_flags(self):
-        # 바탕화면 위젯: 프레임 없음, 작업표시줄 없음
-        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
-        flags |= Qt.WindowType.WindowStaysOnTopHint if self._pinned else Qt.WindowType.WindowStaysOnBottomHint
-        self.setWindowFlags(flags)
+        f = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
+        f |= (Qt.WindowType.WindowStaysOnTopHint if self._pinned
+              else Qt.WindowType.WindowStaysOnBottomHint)
+        self.setWindowFlags(f)
 
-    def _set_chrome_visible(self, visible):
-        """드래그바·크기조절 그립(=프로그램 티)을 보이거나 숨긴다."""
-        self._bar.setVisible(visible)
-        self._grip.setVisible(visible)
+    # ── 오버레이 위치 갱신 ────────────────────────────────────────────
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "_handle"):
+            self._handle.setGeometry(0, 0, self.width(), 20)
+            self._handle.raise_()
+        if hasattr(self, "_grip"):
+            g = 16
+            self._grip.setGeometry(self.width() - g, self.height() - g, g, g)
+            self._grip.raise_()
+        self.save_geo()
 
-    # ── 바탕화면에 진짜로 박기 ───────────────────────────────
-    def embed_into_desktop(self):
-        """WorkerW 의 자식으로 붙여 Lively 처럼 바탕화면에 고정한다."""
+    # ── 설정창이 호출하는 공개 API ────────────────────────────────────
+    def set_opacity(self, pct: int):
+        """pct: 20 ~ 100"""
+        val = max(0.20, min(1.0, pct / 100))
+        self.setWindowOpacity(val)
+        self._cfg.setValue("opacity", val)
+
+    def get_opacity_pct(self) -> int:
+        return round(self.windowOpacity() * 100)
+
+    def set_on_top(self, on: bool):
+        if self._embedded:
+            self._detach()
+        self._pinned = bool(on)
+        self._apply_flags()
+        self.show()
+        self.raise_() if self._pinned else self.lower()
+
+    def is_on_top(self) -> bool:
+        return self._pinned
+
+    def apply_size(self, w: int, h: int):
+        self.resize(w, h)
+        self._center()
+
+    def move_to(self, pos: str):
+        """pos: 'center' | 'topright' | 'topleft' | 'bottomright' | 'bottomleft'"""
+        sc = QApplication.primaryScreen().availableGeometry()
+        m  = 20
+        w, h = self.width(), self.height()
+        targets = {
+            'center':      ((sc.width() - w) // 2,      (sc.height() - h) // 2),
+            'topright':    (sc.right() - w - m,          sc.top() + m),
+            'topleft':     (sc.left() + m,               sc.top() + m),
+            'bottomright': (sc.right() - w - m,          sc.bottom() - h - m),
+            'bottomleft':  (sc.left() + m,               sc.bottom() - h - m),
+        }
+        x, y = targets.get(pos, targets['center'])
+        self.move(x, y)
+        self.save_geo()
+
+    def toggle_visible(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_() if self._pinned else self.lower()
+
+    def reload(self):
+        self._view.setUrl(QUrl(self._url))
+
+    def save_geo(self):
+        self._cfg.setValue("geometry", self.saveGeometry())
+
+    def _center(self):
+        sc = QApplication.primaryScreen().availableGeometry()
+        self.move((sc.width() - self.width()) // 2,
+                  (sc.height() - self.height()) // 2)
+        self.save_geo()
+
+    # ── WorkerW 임베딩 (선택) ─────────────────────────────────────────
+    def embed(self) -> bool:
         if not HAS_WIN32:
             return False
-        worker = find_workerw()
-        if not worker:
+        w = _find_workerw()
+        if not w:
             return False
         try:
-            geo = self.frameGeometry()           # 현재 화면상 위치 기억
+            geo  = self.frameGeometry()
             hwnd = int(self.winId())
-            _user32.SetParent(hwnd, worker)
-            # WorkerW 기준 상대좌표로 재배치
-            pt = wintypes.POINT(geo.x(), geo.y())
-            _user32.ScreenToClient(worker, ctypes.byref(pt))
+            _user32.SetParent(hwnd, w)
+            pt   = wintypes.POINT(geo.x(), geo.y())
+            _user32.ScreenToClient(w, ctypes.byref(pt))
             _user32.MoveWindow(hwnd, pt.x, pt.y, geo.width(), geo.height(), True)
             self._embedded = True
-            self._bar.set_pinned(False)
-            self._set_chrome_visible(False)      # 순수 위젯 = 크롬 숨김
             return True
         except Exception:
             return False
 
-    def detach_from_desktop(self):
-        """바탕화면에서 떼어내 일반 창으로 되돌린다 (로그인·이동용)."""
+    def _detach(self):
         if not (HAS_WIN32 and self._embedded):
             return
         try:
@@ -362,199 +388,212 @@ class CalendarWidget(QWidget):
         except Exception:
             pass
         self._embedded = False
-        self._set_chrome_visible(True)           # 조작모드 = 크롬 표시
         self._apply_flags()
         self.show()
         self.raise_()
-        self.activateWindow()
 
     def toggle_embed(self):
-        """위젯모드(바탕화면 고정) ↔ 일반 창모드 전환."""
         if self._embedded:
-            self.detach_from_desktop()
+            self._detach()
         else:
-            self._pinned = False
-            if not self.embed_into_desktop():
-                # 임베드 불가(구버전/pywin32 없음): 기존 '아래로 깔기' 유지
+            if not self.embed():
                 self._apply_flags()
                 self.show()
                 self.lower()
 
-    def toggle_pin(self):
-        # 박혀 있으면 먼저 떼어낸 뒤 위로 띄운다
-        if self._embedded:
-            self.detach_from_desktop()
-        self._pinned = not self._pinned
-        self._apply_flags()
-        self._bar.set_pinned(self._pinned)
-        self.show()
-
-    # ── 설정 프로그램 창에서 호출하는 제어 메서드들 ──────────────
-    def set_always_on_top(self, on):
-        if self._embedded:
-            self.detach_from_desktop()
-        self._pinned = bool(on)
-        self._apply_flags()
-        self.show()
-        self.raise_() if self._pinned else self.lower()
-
-    def is_on_top(self):
-        return self._pinned
-
-    def center_on_screen(self):
-        screen = QApplication.primaryScreen().availableGeometry()
-        fg = self.frameGeometry()
-        fg.moveCenter(screen.center())
-        self.move(fg.topLeft())
-        self.save_geometry()
-
-    def apply_size(self, w, h):
-        self.resize(int(w), int(h))
-        self.center_on_screen()
-
-    def show_widget(self):
-        self.show()
-        self.raise_() if self._pinned else self.lower()
-
-    def toggle_visible(self):
-        if self.isVisible():
-            self.hide()
-        else:
-            self.show_widget()
-
-    def reload_page(self):
-        self._view.setUrl(QUrl(self._url))
-
-    def save_geometry(self):
-        self._settings.setValue("geometry", self.saveGeometry())
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        # 오버레이 크롬 위치 재계산 (드래그바=상단 전체, 그립=우하단 모서리)
-        if hasattr(self, "_bar"):
-            self._bar.setGeometry(0, 0, self.width(), 18)
-            self._bar.raise_()
-        if hasattr(self, "_grip"):
-            gs = 16
-            self._grip.setGeometry(self.width() - gs, self.height() - gs, gs, gs)
-            self._grip.raise_()
-        self.save_geometry()
-
     def closeEvent(self, e):
-        self.save_geometry()
+        self.save_geo()
         super().closeEvent(e)
 
 
-# ── 프로그램(설정) 창 — 위젯과 완전히 분리 ────────────────────────────────
+# ── WebEngine 팝업 처리 ───────────────────────────────────────────────────
+class _CalPage(QWebEnginePage):
+    _popups: list = []
+
+    def createWindow(self, _type):
+        v = QWebEngineView()
+        v.setWindowTitle("Google 로그인")
+        v.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
+        v.resize(480, 640)
+        v.show()
+        _CalPage._popups.append(v)
+        pg = _CalPage(self.profile(), v)
+        v.setPage(pg)
+        v.destroyed.connect(lambda: _CalPage._popups.remove(v)
+                            if v in _CalPage._popups else None)
+        return pg
+
+
+# ── 설정 창 ──────────────────────────────────────────────────────────────
 class SettingsWindow(QWidget):
-    """'프로그램' 창. 위젯을 제어하는 모든 버튼이 여기에 모여 있다.
-    위젯 본체에는 버튼이 없으므로 바탕화면엔 깔끔한 캘린더만 보인다."""
 
-    SIZES = [("작게", 720, 520), ("보통", 920, 660), ("크게", 1180, 820)]
+    _STYLE = """
+    QWidget          { background:#111827; color:#f1f5f9;
+                       font-family:'Malgun Gothic','Noto Sans KR',sans-serif; }
+    QWidget#card     { background:#1e293b; border-radius:12px; }
+    QLabel#hd        { font-size:18px; font-weight:700; color:#ffffff; }
+    QLabel#sub       { font-size:12px; color:#64748b; }
+    QLabel#sec       { font-size:11px; font-weight:700; color:#38bdf8;
+                       text-transform:uppercase; letter-spacing:1px; }
+    QLabel#val       { font-size:12px; color:#94a3b8; min-width:36px;
+                       qproperty-alignment:AlignRight; }
+    QPushButton      { background:#1e293b; border:1px solid #334155;
+                       border-radius:8px; padding:8px 10px;
+                       color:#e2e8f0; font-size:13px; }
+    QPushButton:hover{ background:#273449; border-color:#3b82f6; color:#fff; }
+    QPushButton#pri  { background:#2563eb; border:none;
+                       color:#fff; font-weight:700; }
+    QPushButton#pri:hover { background:#1d4ed8; }
+    QPushButton#pos  { padding:7px 6px; font-size:12px; }
+    QPushButton#del  { background:#1f1015; border:1px solid #7f1d1f;
+                       color:#fca5a5; }
+    QPushButton#del:hover { background:#2d1217; }
+    QCheckBox        { font-size:13px; spacing:8px; }
+    QCheckBox::indicator            { width:18px; height:18px; border-radius:5px;
+                                      border:2px solid #475569; background:#0f172a; }
+    QCheckBox::indicator:checked    { background:#2563eb; border-color:#2563eb; }
+    QSlider::groove:horizontal      { height:4px; background:#334155;
+                                      border-radius:2px; }
+    QSlider::handle:horizontal      { width:16px; height:16px; margin:-6px 0;
+                                      background:#3b82f6; border-radius:8px; }
+    QSlider::sub-page:horizontal    { background:#3b82f6; border-radius:2px; }
+    QFrame#ln { background:#1e293b; max-height:1px; }
+    """
 
-    def __init__(self, widget, app):
+    SIZES = [("소", 720, 520), ("중", 920, 660), ("대", 1120, 800), ("전체", 0, 0)]
+
+    def __init__(self, widget: CalendarWidget, app: QApplication):
         super().__init__()
-        self._w = widget
+        self._w   = widget
         self._app = app
-        self.setWindowTitle("선생님 캘린더 — 프로그램")
-        self.setWindowFlag(Qt.WindowType.Window, True)
-        self.resize(380, 500)
-        self.setStyleSheet(
-            "QWidget{background:#0f172a;color:#e2e8f0;font-family:'Malgun Gothic','Noto Sans KR';}"
-            "QLabel#title{font-size:17px;font-weight:bold;color:white;}"
-            "QLabel#sub{color:#94a3b8;font-size:12px;}"
-            "QLabel#sec{color:#7dd3fc;font-size:12px;font-weight:bold;margin-top:6px;}"
-            "QPushButton{background:#1e293b;border:1px solid #334155;border-radius:8px;"
-            "padding:9px 12px;color:#e2e8f0;font-size:13px;}"
-            "QPushButton:hover{background:#273449;border-color:#3b82f6;}"
-            "QPushButton#primary{background:#2563eb;border:none;color:white;font-weight:bold;}"
-            "QPushButton#primary:hover{background:#1d4ed8;}"
-            "QPushButton#danger{background:#3a1620;border:1px solid #7f1d2e;color:#fca5a5;}"
-            "QPushButton#danger:hover{background:#4c1d2a;}"
-            "QCheckBox{font-size:13px;spacing:8px;}"
-            "QFrame#hr{background:#1e293b;max-height:1px;min-height:1px;}"
-        )
+        self.setWindowTitle("선생님 캘린더 — 설정")
+        self.setWindowFlag(Qt.WindowType.Window)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        self.setMinimumWidth(360)
+        self.setStyleSheet(self._STYLE)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(8)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
 
-        title = QLabel("📅 선생님 캘린더")
-        title.setObjectName("title")
-        root.addWidget(title)
-        sub = QLabel("바탕화면 위젯을 여기서 제어합니다.")
-        sub.setObjectName("sub")
-        root.addWidget(sub)
+        # ── 헤더 ──────────────────────────────────────────────────────
+        hd = QLabel("📅  선생님 캘린더")
+        hd.setObjectName("hd")
+        root.addWidget(hd)
+        sb = QLabel("트레이(📅)를 닫아도 위젯은 계속 실행됩니다.")
+        sb.setObjectName("sub")
+        root.addWidget(sb)
+        root.addWidget(self._line())
 
-        root.addWidget(self._hr())
+        # ── 위젯 표시 ─────────────────────────────────────────────────
+        root.addWidget(self._sec("위젯 표시"))
+        self._btn_vis = self._btn("👁  위젯 보이기 / 숨기기",
+                                  self._w.toggle_visible, pri=True)
+        root.addWidget(self._btn_vis)
 
-        # 표시/숨기기
-        root.addWidget(self._section("위젯 표시"))
-        self._btn_toggle = self._mk("👁  위젯 보이기 / 숨기기", self._toggle_show, primary=True)
-        root.addWidget(self._btn_toggle)
+        # ── 투명도 ────────────────────────────────────────────────────
+        root.addWidget(self._sec("투명도"))
+        op_row = QHBoxLayout()
+        op_row.setSpacing(8)
+        self._sld_op = QSlider(Qt.Orientation.Horizontal)
+        self._sld_op.setRange(20, 100)
+        self._sld_op.setValue(self._w.get_opacity_pct())
+        self._sld_op.setTickInterval(10)
+        self._lbl_op = QLabel(f"{self._sld_op.value()}%")
+        self._lbl_op.setObjectName("val")
+        op_row.addWidget(self._sld_op)
+        op_row.addWidget(self._lbl_op)
+        root.addLayout(op_row)
+        self._sld_op.valueChanged.connect(self._on_opacity)
 
-        # 위치 / 크기
-        root.addWidget(self._section("위치 · 크기"))
-        root.addWidget(self._mk("🎯  화면 가운데로 정렬", self._w.center_on_screen))
-        size_row = QHBoxLayout()
-        size_row.setSpacing(6)
+        # ── 크기 ──────────────────────────────────────────────────────
+        root.addWidget(self._sec("크기"))
+        sz_row = QHBoxLayout()
+        sz_row.setSpacing(6)
         for name, w, h in self.SIZES:
-            b = self._mk(name, lambda _=False, w=w, h=h: self._w.apply_size(w, h))
-            size_row.addWidget(b)
-        root.addLayout(size_row)
-        hint = QLabel("· 위젯 위쪽 모서리를 끌어 이동\n· 오른쪽 아래 모서리를 끌어 크기 조절")
-        hint.setObjectName("sub")
-        root.addWidget(hint)
+            b = QPushButton(name)
+            b.setObjectName("pos")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            if w == 0:   # 전체화면
+                sc = QApplication.primaryScreen().availableGeometry()
+                _w, _h = sc.width(), sc.height()
+                b.clicked.connect(lambda _, w=_w, h=_h: self._w.apply_size(w, h))
+            else:
+                b.clicked.connect(lambda _, w=w, h=h: self._w.apply_size(w, h))
+            sz_row.addWidget(b)
+        root.addLayout(sz_row)
 
-        # 옵션
-        root.addWidget(self._section("옵션"))
+        # ── 위치 ──────────────────────────────────────────────────────
+        root.addWidget(self._sec("위치"))
+        pos_grid = [
+            [("↖ 왼위", "topleft"),    ("⬆ 가운데", "center"),    ("↗ 오른위", "topright")],
+            [("↙ 왼아래", "bottomleft"), None,                   ("↘ 오른아래", "bottomright")],
+        ]
+        for row in pos_grid:
+            r = QHBoxLayout()
+            r.setSpacing(6)
+            for item in row:
+                if item is None:
+                    r.addStretch()
+                else:
+                    label, key = item
+                    b = QPushButton(label)
+                    b.setObjectName("pos")
+                    b.setCursor(Qt.CursorShape.PointingHandCursor)
+                    b.clicked.connect(lambda _, k=key: self._w.move_to(k))
+                    r.addWidget(b)
+            root.addLayout(r)
+
+        # ── 옵션 ──────────────────────────────────────────────────────
+        root.addWidget(self._sec("옵션"))
         self._chk_top = QCheckBox("항상 맨 위에 표시")
         self._chk_top.setChecked(self._w.is_on_top())
-        self._chk_top.toggled.connect(self._w.set_always_on_top)
+        self._chk_top.toggled.connect(self._w.set_on_top)
         root.addWidget(self._chk_top)
 
         if HAS_WIN32:
-            self._chk_embed = QCheckBox("벽지에 박기 (보기 전용 · 클릭 불가)")
-            self._chk_embed.toggled.connect(self._on_embed_toggled)
+            self._chk_embed = QCheckBox("벽지에 완전히 박기  (보기 전용 · 클릭 불가)")
+            self._chk_embed.toggled.connect(self._on_embed)
             root.addWidget(self._chk_embed)
 
-        root.addWidget(self._mk("↻  위젯 새로고침", self._w.reload_page))
+        root.addWidget(self._btn("↻  위젯 새로고침", self._w.reload))
 
+        # ── 하단 ──────────────────────────────────────────────────────
         root.addStretch()
-        root.addWidget(self._hr())
-        root.addWidget(self._mk("⏻  완전히 종료", self._app.quit, danger=True))
+        root.addWidget(self._line())
+        root.addWidget(self._btn("⏻  완전히 종료", self._app.quit, danger=True))
 
-    # 헬퍼 ---------------------------------------------------------------
-    def _mk(self, text, slot, primary=False, danger=False):
+    # ── 내부 헬퍼 ─────────────────────────────────────────────────────
+    def _btn(self, text, slot, pri=False, danger=False):
         b = QPushButton(text)
         b.setCursor(Qt.CursorShape.PointingHandCursor)
-        if primary:
-            b.setObjectName("primary")
+        if pri:
+            b.setObjectName("pri")
         elif danger:
-            b.setObjectName("danger")
-        b.clicked.connect(lambda: slot())
+            b.setObjectName("del")
+        b.clicked.connect(slot)
         return b
 
-    def _section(self, text):
-        lbl = QLabel(text)
-        lbl.setObjectName("sec")
-        return lbl
+    def _sec(self, text):
+        l = QLabel(text)
+        l.setObjectName("sec")
+        return l
 
-    def _hr(self):
+    def _line(self):
         f = QFrame()
-        f.setObjectName("hr")
+        f.setObjectName("ln")
         f.setFrameShape(QFrame.Shape.HLine)
         return f
 
-    def _toggle_show(self):
-        self._w.toggle_visible()
+    def _on_opacity(self, v):
+        self._lbl_op.setText(f"{v}%")
+        self._w.set_opacity(v)
 
-    def _on_embed_toggled(self, on):
-        # 체크 상태와 실제 임베드 상태를 맞춘다
+    def _on_embed(self, on):
         if on and not self._w._embedded:
             self._w.toggle_embed()
         elif not on and self._w._embedded:
-            self._w.detach_from_desktop()
+            self._w._detach()
 
     def open(self):
         self.show()
@@ -562,18 +601,17 @@ class SettingsWindow(QWidget):
         self.activateWindow()
 
     def closeEvent(self, e):
-        # 닫아도 프로그램은 트레이에 남는다 (위젯 계속 동작)
         e.ignore()
         self.hide()
 
 
 # ── 트레이 아이콘 ────────────────────────────────────────────────────────
-def make_icon():
+def _make_icon() -> QIcon:
     px = QPixmap(64, 64)
     px.fill(Qt.GlobalColor.transparent)
     p = QPainter(px)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(QColor("#3b82f6"))
+    p.setBrush(QColor("#2563eb"))
     p.setPen(Qt.PenStyle.NoPen)
     p.drawRoundedRect(4, 4, 56, 56, 14, 14)
     p.setPen(QColor("white"))
@@ -583,6 +621,7 @@ def make_icon():
     return QIcon(px)
 
 
+# ── 메인 ──────────────────────────────────────────────────────────────────
 def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -592,63 +631,53 @@ def main():
     if not os.path.exists(html_path):
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.critical(None, "오류",
-            f"{HTML_FILE} 파일을 찾을 수 없습니다.\n경로: {html_path}")
+            f"{HTML_FILE} 파일을 찾을 수 없습니다.\n{html_path}")
         sys.exit(1)
 
-    port = find_free_port()
-    start_server(port)
+    port = _find_free_port()
+    _start_server(port)
     url = f"http://localhost:{port}/{HTML_FILE}"
 
-    win = CalendarWidget(url)
-    win.show()
-    win.lower()
+    widget   = CalendarWidget(url)
+    settings = SettingsWindow(widget, app)
 
-    # 프로그램(설정) 창 — 위젯과 분리. 평소엔 숨겨져 있고 트레이에서 연다.
-    settings = SettingsWindow(win, app)
+    widget.show()
+    QTimer.singleShot(400, widget.lower)
 
-    tray = QSystemTrayIcon(make_icon(), app)
-    tray.setToolTip("선생님 캘린더")
+    tray = QSystemTrayIcon(_make_icon(), app)
+    tray.setToolTip("선생님 캘린더  —  클릭하면 설정 창이 열립니다")
 
-    # 위젯은 맨 아래에 깔되 일반 창이라 스크롤·클릭·크기조절 모두 가능.
-    def _settle():
-        win.lower()
-        if not win._settings.value("hint_shown"):
+    def _first_run():
+        if not widget._cfg.value("hint_shown"):
             tray.showMessage(
                 "선생님 캘린더 위젯",
-                "바탕화면에 위젯이 떴습니다.\n"
-                "설정·종료는 트레이(📅) 아이콘을 클릭하세요.",
-                QSystemTrayIcon.MessageIcon.Information, 6000)
-            win._settings.setValue("hint_shown", True)
-    QTimer.singleShot(600, _settle)
+                "바탕화면에 위젯이 실행됐습니다.\n"
+                "트레이(📅) 아이콘 클릭 → 설정창 열기",
+                QSystemTrayIcon.MessageIcon.Information, 5000)
+            widget._cfg.setValue("hint_shown", True)
+    QTimer.singleShot(800, _first_run)
 
     menu = QMenu()
     menu.setStyleSheet(
-        "QMenu{background:white;border:1px solid #e2e8f0;border-radius:8px;padding:4px;}"
-        "QMenu::item{padding:7px 22px;border-radius:5px;font-size:13px;}"
-        "QMenu::item:selected{background:#eff6ff;color:#2563eb;}"
-        "QMenu::separator{height:1px;background:#e2e8f0;margin:4px 6px;}"
+        "QMenu{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:4px;color:#e2e8f0;}"
+        "QMenu::item{padding:8px 20px;border-radius:6px;font-size:13px;}"
+        "QMenu::item:selected{background:#2563eb;color:white;}"
+        "QMenu::separator{height:1px;background:#334155;margin:4px 8px;}"
     )
-
-    a_settings = QAction("⚙  프로그램 설정 열기", app)
-    a_settings.triggered.connect(settings.open)
-    menu.addAction(a_settings)
-
+    a_cfg  = QAction("⚙  설정 열기", app)
     a_show = QAction("👁  위젯 표시 / 숨기기", app)
-    a_show.triggered.connect(win.toggle_visible)
-    menu.addAction(a_show)
-
-    menu.addSeparator()
-
     a_quit = QAction("⏻  종료", app)
+    a_cfg.triggered.connect(settings.open)
+    a_show.triggered.connect(widget.toggle_visible)
     a_quit.triggered.connect(app.quit)
+    menu.addAction(a_cfg)
+    menu.addAction(a_show)
+    menu.addSeparator()
     menu.addAction(a_quit)
-
     tray.setContextMenu(menu)
-    # 트레이 아이콘 클릭 → 프로그램 설정 창 열기
     tray.activated.connect(
         lambda r: settings.open()
-        if r == QSystemTrayIcon.ActivationReason.Trigger else None
-    )
+        if r == QSystemTrayIcon.ActivationReason.Trigger else None)
     tray.show()
 
     sys.exit(app.exec())
