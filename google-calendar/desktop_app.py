@@ -242,11 +242,11 @@ class CalendarWidget(QWidget):
         root.addWidget(self._bar)
         root.addWidget(self._view, 1)
 
-        grip = QSizeGrip(self)
+        self._grip = QSizeGrip(self)
         grow = QHBoxLayout()
         grow.setContentsMargins(0, 0, 2, 2)
         grow.addStretch()
-        grow.addWidget(grip)
+        grow.addWidget(self._grip)
         root.addLayout(grow)
 
         # 저장된 위치/크기 복원
@@ -263,6 +263,11 @@ class CalendarWidget(QWidget):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
         flags |= Qt.WindowType.WindowStaysOnTopHint if self._pinned else Qt.WindowType.WindowStaysOnBottomHint
         self.setWindowFlags(flags)
+
+    def _set_chrome_visible(self, visible):
+        """드래그바·크기조절 그립(=프로그램 티)을 보이거나 숨긴다."""
+        self._bar.setVisible(visible)
+        self._grip.setVisible(visible)
 
     # ── 바탕화면에 진짜로 박기 ───────────────────────────────
     def embed_into_desktop(self):
@@ -282,6 +287,7 @@ class CalendarWidget(QWidget):
             _user32.MoveWindow(hwnd, pt.x, pt.y, geo.width(), geo.height(), True)
             self._embedded = True
             self._bar.set_pinned(False)
+            self._set_chrome_visible(False)      # 순수 위젯 = 크롬 숨김
             return True
         except Exception:
             return False
@@ -295,8 +301,11 @@ class CalendarWidget(QWidget):
         except Exception:
             pass
         self._embedded = False
+        self._set_chrome_visible(True)           # 조작모드 = 크롬 표시
         self._apply_flags()
         self.show()
+        self.raise_()
+        self.activateWindow()
 
     def toggle_embed(self):
         """위젯모드(바탕화면 고정) ↔ 일반 창모드 전환."""
@@ -377,14 +386,22 @@ def main():
     win.show()
     win.lower()
 
-    # 시작 1초 뒤 바탕화면에 자동으로 박는다 (창 핸들·이벤트 루프 준비 후)
-    def _auto_embed():
-        if not win.embed_into_desktop():
-            win.lower()   # 폴백: 그냥 아래로 깔기
-    QTimer.singleShot(1000, _auto_embed)
-
     tray = QSystemTrayIcon(make_icon(), app)
     tray.setToolTip("선생님 캘린더")
+
+    # 시작 1초 뒤 바탕화면에 자동으로 박는다 (창 핸들·이벤트 루프 준비 후)
+    def _auto_embed():
+        if win.embed_into_desktop():
+            if not win._settings.value("hint_shown"):
+                tray.showMessage(
+                    "선생님 캘린더 위젯",
+                    "바탕화면에 고정되었습니다.\n"
+                    "로그인·편집은 트레이(📅) 우클릭 → '조작 모드'를 누르세요.",
+                    QSystemTrayIcon.MessageIcon.Information, 6000)
+                win._settings.setValue("hint_shown", True)
+        else:
+            win.lower()   # 폴백: 그냥 아래로 깔기
+    QTimer.singleShot(1000, _auto_embed)
 
     menu = QMenu()
     menu.setStyleSheet(
@@ -397,14 +414,14 @@ def main():
     a_show.triggered.connect(win.toggle_visible)
     menu.addAction(a_show)
 
-    a_embed = QAction("🖼️ 바탕화면 위젯모드 켜기/끄기", app)
+    a_embed = QAction("🔧 조작 모드 (로그인·이동·편집)", app)
     a_embed.triggered.connect(win.toggle_embed)
     menu.addAction(a_embed)
     if not HAS_WIN32:
         a_embed.setEnabled(False)
-        a_embed.setText("🖼️ 위젯모드 (pywin32 필요)")
+        a_embed.setText("🔧 조작 모드 (pywin32 필요)")
 
-    a_pin = QAction("📌 항상 위에 띄우기 (로그인·이동용)", app)
+    a_pin = QAction("📌 항상 위에 띄우기 (보조)", app)
     a_pin.triggered.connect(win.toggle_pin)
     menu.addAction(a_pin)
 
