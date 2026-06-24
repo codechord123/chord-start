@@ -276,15 +276,16 @@ _ENGINE_HTML = """<!doctype html><html lang='ko'><head><meta charset='utf-8'>
 </style></head><body><div class='b'>
  <h1>내장 브라우저 엔진이 켜지지 않았습니다</h1>
  <p>화면(캘린더)을 그리는 엔진이 시작되지 않았습니다.<br>
-    대부분 <b>Python 버전이 너무 최신</b>일 때 생깁니다.</p>
+    대부분 <b>PyQt6-WebEngine 설치가 불완전</b>할 때 생깁니다.</p>
  <p><b>해결 방법 (권장):</b></p>
  <ol>
-   <li>현재 Python(3.14 등)을 제거</li>
-   <li><code>python.org</code> 에서 <b>Python 3.12</b> 설치<br>
-       (설치 시 "Add python.exe to PATH" 체크)</li>
-   <li><code>install.bat</code> 다시 실행</li>
+   <li><code>install.bat</code> 을 다시 실행 (PyQt6 재설치)</li>
+   <li>그래도 안 되면 <code>cmd</code> 창에서 아래 실행:<br>
+       <code>pip install --force-reinstall PyQt6 PyQt6-WebEngine</code></li>
+   <li>위젯을 다시 실행</li>
  </ol>
  <p style='margin-top:14px;color:#64748b;font-size:12px'>
+   Python 3.10 이상이면 버전은 문제가 아닙니다(3.14 포함).<br>
    같은 폴더의 <code>widget.log</code> 를 보내주시면 더 정확히 도와드립니다.</p>
 </div></body></html>"""
 

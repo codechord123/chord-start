@@ -208,44 +208,32 @@ def _rerun_with_312(py312_path):
 
 
 def _handle_version_upgrade():
-    """Python 3.14+ 감지 시 3.12 설치 후 재실행. 실행 중이면 False 를 반환."""
+    """Python 버전 확인.
+
+    PyQt6 6.11+ 은 안정 ABI(abi3) 휠로 배포되어 Python 3.10 이상
+    '모든' 버전(3.13, 3.14 포함)에서 그대로 동작한다.
+    따라서 3.14 라도 그대로 진행하면 된다.
+    3.10 미만(너무 오래된 버전)일 때만 설치를 중단하고 안내한다.
+    항상 False 를 반환(= 계속 진행)하거나, 너무 낮으면 종료한다.
+    """
     major, minor = sys.version_info[:2]
-    if (major, minor) < (3, 14):
-        return False  # 정상 버전 — 계속 진행
+    if (major, minor) >= (3, 10):
+        return False  # 3.10 ~ 3.14+ 모두 정상 — 계속 진행
 
     log("=" * 60)
-    log(f"  Python {major}.{minor} 감지됨 — 버전 자동 조정 시작")
+    log(f"  [오류] Python {major}.{minor} 은(는) 너무 오래된 버전입니다.")
     log("=" * 60)
     log()
-    log("  PyQt6-WebEngine(내장 브라우저)이 Python 3.14 와")
-    log("  완전히 호환되지 않아 위젯이 흰 화면으로 멈출 수 있습니다.")
-    log("  Python 3.12 가 필요합니다.")
+    log("  이 위젯은 Python 3.10 이상이 필요합니다.")
+    log("  Python 3.12(권장) 또는 3.13 / 3.14 를 설치한 뒤")
+    log("  install.bat 을 다시 실행하세요:")
     log()
-
-    # 이미 Python 3.12 가 설치돼 있으면 그걸로 재실행
-    py312 = _find_py312()
-    if py312:
-        log(f"  Python 3.12 발견: {py312}")
-        log()
-        _rerun_with_312(py312)   # 돌아오지 않음
-
-    # Python 3.12 없음 — 자동 설치
-    log("  Python 3.12 가 설치되어 있지 않습니다.")
-    log("  지금 자동으로 다운로드 및 설치를 진행합니다.")
+    log(f"    https://www.python.org/downloads/release/python-3129/")
     log()
-
-    if not _download_python312():
-        log()
-        log("  [오류] Python 3.12 자동 설치에 실패했습니다.")
-        log()
-        log("  수동 설치 방법:")
-        log(f"    1. 아래 주소에서 설치 파일을 받으세요:")
-        log(f"       https://www.python.org/ftp/python/{_PY312_VER}/"
-            f"python-{_PY312_VER}-{'amd64' if _is_64bit() else ''}.exe")
-        log("    2. 설치 시 'Add python.exe to PATH' 체크")
-        log("    3. 설치 완료 후 install.bat 을 다시 실행")
-        input("\n  [Enter] 를 누르면 종료합니다...")
-        sys.exit(1)
+    log("  설치 시 'Add python.exe to PATH' 를 꼭 체크하세요.")
+    log("=" * 60)
+    input("\n  [Enter] 를 누르면 종료합니다...")
+    sys.exit(1)
 
     log()
     log("  Python 3.12 설치 완료!")
@@ -333,11 +321,11 @@ def main():
     log(f"  위치   : {HERE}")
     log()
 
-    # ── 0) Python 버전 확인 및 자동 업그레이드 ──────────────────────────
-    _handle_version_upgrade()   # 3.14+ 이면 3.12 설치 후 재실행(돌아오지 않음)
+    # ── 0) Python 버전 확인 ─────────────────────────────────────────────
+    _handle_version_upgrade()   # 3.10 미만이면 종료, 그 외(3.14 포함) 진행
 
-    # 여기까지 왔으면 Python 3.12 이하 → 정상 진행
-    log(f"  Python {sys.version.split()[0]} — 버전 정상")
+    # 3.10 이상 → PyQt6 6.11(abi3 휠)이 그대로 동작
+    log(f"  Python {sys.version.split()[0]} — 버전 정상 (3.10+ 지원)")
     log()
 
     # 필수 파일 확인
