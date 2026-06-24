@@ -36,6 +36,7 @@ try:
     )
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWebEngineCore    import QWebEngineProfile, QWebEnginePage
+    from PyQt6.QtNetwork          import QNetworkProxy
 except ImportError as _e:
     try:
         import tkinter as _tk, tkinter.messagebox as _mb
@@ -794,6 +795,20 @@ def main():
         wlog("OpenGL 백엔드 = %s (+ShareOpenGLContexts)" % gl)
     except Exception as e:
         wlog("[경고] OpenGL 속성 설정 실패: %r" % e)
+
+    # ── 흰 화면의 진짜 원인: 프록시 ────────────────────────────────────
+    # 학교/회사 네트워크의 프록시가 QtWebEngine 의 localhost 연결을 가로채
+    # 페이지(index.html)가 영원히 로드되지 않는다(서버는 정상인데도).
+    # 앱 전체를 '프록시 없이 직접 연결'로 강제해 이 문제를 없앤다.
+    try:
+        QNetworkProxy.setApplicationProxy(
+            QNetworkProxy(QNetworkProxy.ProxyType.NoProxy))
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
+            os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+            + " --no-proxy-server").strip()
+        wlog("프록시 비활성화: NoProxy + --no-proxy-server")
+    except Exception as e:
+        wlog("[경고] 프록시 설정 실패: %r" % e)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
