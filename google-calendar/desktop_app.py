@@ -19,12 +19,21 @@
 import os, sys, json, socket, threading, functools, webbrowser, http.server
 from urllib.parse import urlparse, parse_qs, unquote
 
-# ── 흰 화면(white screen) 방지 ────────────────────────────────────────────
-# 핵심은 Chromium 플래그가 아니라 Qt 의 OpenGL 설정이다(아래 main() 에서 처리).
-# Chromium 플래그는 샌드박스만 끈다(제한된 환경에서 렌더 프로세스 차단 방지).
-#   · --disable-gpu      → load 는 되는데 화면 합성이 안 돼 흰 화면 (사용 금지)
-#   · --in-process-gpu   → 일부 PC 에서 로드 자체가 멈춤 (사용 금지)
-os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
+# ── Chromium 플래그 — PyQt 임포트 "전에" 설정해야 한다 ─────────────────────
+# QtWebEngine 은 'from PyQt6.QtWebEngineWidgets import ...' 시점에 Chromium 을
+# 초기화하며 QTWEBENGINE_CHROMIUM_FLAGS 를 읽는다.
+# main() 이나 QApplication 생성 직전에 설정하면 이미 늦다 → 플래그 무시됨.
+#   --no-sandbox       : 제한 환경(학교 AppArmor 등)에서 렌더 프로세스 차단 방지
+#   --no-proxy-server  : 학교/회사 프록시가 localhost 연결을 가로채는 문제 방지
+#   --disable-gpu      ❌ 화면 합성이 안 돼 흰 화면 (사용 금지)
+#   --in-process-gpu   ❌ 일부 PC 에서 로드 자체가 멈춤 (사용 금지)
+_cf = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+if "--no-sandbox" not in _cf:
+    _cf = ("--no-sandbox " + _cf).strip()
+if "--no-proxy-server" not in _cf:
+    _cf = (_cf + " --no-proxy-server").strip()
+os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _cf
+del _cf
 
 try:
     from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer, QPoint
@@ -313,9 +322,12 @@ class _DragHandle(QWidget):
 
 # ── 위젯 본체 ───────────────────────────────────────────────────────────────
 class CalendarWidget(QWidget):
-    def __init__(self, url: str):
+    def __init__(self, url: str, html_content: str = ""):
         super().__init__()
         self._url      = url
+        # base URL = http://localhost:PORT/ (dirname of the full URL)
+        self._base_url = url.rsplit("/", 1)[0] + "/"
+        self._html     = html_content   # pre-read content → setHtml bypasses proxy
         self._cfg      = QSettings("TeacherCalendar", "widget")
         self._pinned   = False
         self._embedded = False
@@ -353,13 +365,11 @@ class CalendarWidget(QWidget):
         # 로드 실패(흰 화면) 시 한 번 자동 재시도
         self._reloaded_once = False
         self._loaded = False
-        self._view.loadStarted.connect(lambda: wlog("loadStarted " + self._url))
+        self._view.loadStarted.connect(lambda: wlog("loadStarted"))
         self._view.loadFinished.connect(self._on_load_finished)
         wlog("위젯 생성, URL = " + url)
-        self._view.setUrl(QUrl(url))
-        wlog("setUrl 호출 완료 — 엔진 응답 대기")
+        self._load()
         # 감시 타이머: 20초 안에 로드가 완료되지 않으면 엔진 이상으로 간주
-        # (Chromium 초기화가 느린 PC 에서 8초면 부족해 오판이 생긴다)
         QTimer.singleShot(20000, self._watchdog)
 
         lay = QVBoxLayout(self)
@@ -451,9 +461,20 @@ class CalendarWidget(QWidget):
             self.show()
             self.raise_() if self._pinned else self.lower()
 
+    def _load(self):
+        """setHtml 로 페이지를 주입한다 (프록시가 localhost 연결을 막아도 동작).
+        baseUrl = http://localhost:PORT/ 이므로 JS 의 상대경로 API 호출이 정상 작동."""
+        if self._html:
+            wlog("setHtml 호출 (baseUrl=%s)" % self._base_url)
+            self._view.setHtml(self._html, QUrl(self._base_url))
+        else:
+            wlog("setUrl 호출 (html 없음 — 폴백)")
+            self._view.setUrl(QUrl(self._url))
+
     def reload(self):
         self._reloaded_once = False
-        self._view.setUrl(QUrl(self._url))
+        self._loaded = False
+        self._load()
 
     def _watchdog(self):
         # 20초가 지나도 한 번도 로드되지 않음 = 내장 엔진(QtWebEngine)이 안 켜짐.
@@ -483,21 +504,20 @@ class CalendarWidget(QWidget):
             self._loaded = True
             QTimer.singleShot(50, self._force_paint)
             return
-        # 로드 실패(흰 화면/연결 실패) → 1초 뒤 한 번만 자동 재시도
+        # 로드 실패 → 1초 뒤 한 번만 자동 재시도
         if not self._reloaded_once:
             self._reloaded_once = True
-            QTimer.singleShot(1000, lambda: self._view.setUrl(QUrl(self._url)))
+            QTimer.singleShot(1000, self._load)
         else:
             # 재시도도 실패 → 흰 화면 대신 어두운 진단 화면을 띄운다
             wlog("재시도 실패 → 진단 화면 표시")
             self._view.setHtml(_ERROR_HTML.replace("__URL__", self._url))
 
     def _on_render_dead(self, status, code):
-        # 렌더 프로세스 비정상 종료 = 대표적 '흰 화면' 원인. 기록 후 1회 재로드.
         wlog("renderProcessTerminated status=%s code=%s" % (status, code))
         if not self._reloaded_once:
             self._reloaded_once = True
-            QTimer.singleShot(800, lambda: self._view.setUrl(QUrl(self._url)))
+            QTimer.singleShot(800, self._load)
 
     def save_geo(self):
         self._cfg.setValue("geometry", self.saveGeometry())
@@ -773,6 +793,7 @@ def main():
     wlog("=" * 50)
     wlog("위젯 시작  python=%s" % sys.version.split()[0])
     wlog("APP_DIR=%s" % APP_DIR)
+    # 플래그는 임포트 전에 이미 설정됨 (모듈 최상단 참고)
     wlog("CHROMIUM_FLAGS=%s" % os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS"))
 
     # ── 흰 화면의 진짜 해결책 ──────────────────────────────────────────
@@ -796,17 +817,14 @@ def main():
     except Exception as e:
         wlog("[경고] OpenGL 속성 설정 실패: %r" % e)
 
-    # ── 흰 화면의 진짜 원인: 프록시 ────────────────────────────────────
-    # 학교/회사 네트워크의 프록시가 QtWebEngine 의 localhost 연결을 가로채
-    # 페이지(index.html)가 영원히 로드되지 않는다(서버는 정상인데도).
-    # 앱 전체를 '프록시 없이 직접 연결'로 강제해 이 문제를 없앤다.
+    # ── Qt 네트워크 스택도 프록시 없이 직접 연결 ──────────────────────────
+    # Chromium 의 --no-proxy-server 플래그(임포트 전에 설정)가 Chromium 네트워크를
+    # 담당하고, QNetworkProxy.NoProxy 는 Qt 자체 네트워크 스택(QNetworkAccessManager)
+    # 에 적용된다. 두 경로 모두 차단하는 이중 방어.
     try:
         QNetworkProxy.setApplicationProxy(
             QNetworkProxy(QNetworkProxy.ProxyType.NoProxy))
-        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
-            os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-            + " --no-proxy-server").strip()
-        wlog("프록시 비활성화: NoProxy + --no-proxy-server")
+        wlog("프록시 비활성화: NoProxy (Qt) + --no-proxy-server (Chromium, 임포트 전 적용)")
     except Exception as e:
         wlog("[경고] 프록시 설정 실패: %r" % e)
 
@@ -822,6 +840,17 @@ def main():
             f"{HTML_FILE} 파일을 찾을 수 없습니다.\n{html_path}")
         sys.exit(1)
 
+    # index.html 을 미리 읽어 둔다.
+    # CalendarWidget 은 setHtml() 로 내용을 주입하므로 프록시가 localhost 를
+    # 가로채더라도 초기 페이지 로드가 차단되지 않는다.
+    try:
+        with open(html_path, encoding="utf-8") as _f:
+            html_content = _f.read()
+        wlog("index.html 읽기 OK  (%d bytes)" % len(html_content))
+    except Exception as e:
+        wlog("[경고] index.html 읽기 실패 — setUrl 폴백: %r" % e)
+        html_content = ""
+
     port = _find_free_port()
     try:
         _start_server(port)
@@ -834,7 +863,7 @@ def main():
         sys.exit(1)
     url = f"http://localhost:{port}/{HTML_FILE}"
 
-    widget   = CalendarWidget(url)
+    widget   = CalendarWidget(url, html_content)
     settings = SettingsWindow(widget, app)
 
     widget.show()
