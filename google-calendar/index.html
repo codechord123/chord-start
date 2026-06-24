@@ -72,6 +72,9 @@
         /* 탭 전환 페이드 */
         @keyframes panelFade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
         .panel-fade { animation: panelFade 0.2s ease; }
+        /* 리스트 항목 등장 (새로 추가된 항목만) */
+        @keyframes itemIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+        .item-enter { animation: itemIn 0.25s cubic-bezier(0.4,0,0.2,1); }
 
         /* 헤더 */
         .header {
@@ -780,6 +783,7 @@ const FIREBASE_CONFIG = {
 let fbAuth = null, fbDb = null, fbStorage = null;
 let boardUser = null, boardPosts = [], boardFilter = 'all';
 let boardUnsubscribe = null, currentPanelTab = 'todo';
+let boardSeenIds = new Set();   // 이미 표시한 게시물 (새 글만 등장 애니메이션)
 
 // ── 상태 ────────────────────────────────────────────────
 let tokenClient, gapiReady = false, gisReady = false;
@@ -845,6 +849,7 @@ function handleSignoutClick() {
     if (!token) return;
     google.accounts.oauth2.revoke(token.access_token);
     gapi.client.setToken('');
+    if (fbAuth && fbAuth.currentUser) fbAuth.signOut();   // 게시판도 함께 로그아웃
     $('login-btn').classList.remove('hidden');
     $('logout-btn').classList.add('hidden');
     $('refresh-btn').classList.add('hidden');
@@ -1185,6 +1190,7 @@ let todos = [];
 let todoFilter = 'all';
 let todoTag = null;          // 현재 선택된 태그 필터 (null = 전체)
 let todoPriority = 'normal'; // 'high', 'normal', 'low'
+let justAddedTodoId = null;  // 방금 추가된 할일 (등장 애니메이션용)
 
 const PRIORITY = {
     high:   { label: '중', color: '#ef4444', text: '🔴 중요' },
@@ -1224,7 +1230,9 @@ function addTodoFromInput() {
     const tags = (raw.match(/#([^\s#]+)/g) || []).map(t => t.slice(1));
     const text = raw.replace(/#[^\s#]+/g, '').replace(/\s+/g, ' ').trim();
     if (!text) { showToast('#태그만 입력하면 추가되지 않습니다.'); return; }
-    todos.unshift({ id: Date.now().toString(), text, tags, priority: todoPriority, done: false, created: new Date().toISOString() });
+    const id = Date.now().toString();
+    todos.unshift({ id, text, tags, priority: todoPriority, done: false, created: new Date().toISOString() });
+    justAddedTodoId = id;
     saveTodos();
     input.value = '';
     renderTodos();
@@ -1236,9 +1244,12 @@ function toggleTodoDone(id) {
 }
 
 function deleteTodoItem(id) {
+    const removed = todos.find(t => t.id === id);
     todos = todos.filter(t => t.id !== id);
     saveTodos();
     renderTodos();
+    // 게시판에서 가져온 할일이면, 게시판의 "추가됨" 버튼도 되돌림
+    if (removed && removed.sourcePostId && boardUser) renderBoardPosts();
 }
 
 function clearDone() {
@@ -1260,6 +1271,7 @@ function renderTodos() {
     // 2단계: 태그 필터
     if (todoTag) filtered = filtered.filter(t => (t.tags || []).includes(todoTag));
 
+    const prevScroll = list.scrollTop;   // 스크롤 위치 보존
     list.innerHTML = '';
 
     if (!filtered.length) {
@@ -1272,7 +1284,8 @@ function renderTodos() {
     } else {
         filtered.forEach(todo => {
             const p = PRIORITY[todo.priority] || PRIORITY.normal;
-            const item = el('div', 'todo-item' + (todo.done ? ' done' : ''));
+            const item = el('div', 'todo-item' + (todo.done ? ' done' : '')
+                                 + (todo.id === justAddedTodoId ? ' item-enter' : ''));
 
             // 체크박스
             const check = el('div', 'todo-check' + (todo.done ? ' checked' : ''));
@@ -1330,6 +1343,9 @@ function renderTodos() {
         });
     }
 
+    list.scrollTop = prevScroll;   // 스크롤 위치 복원
+    justAddedTodoId = null;        // 등장 애니메이션은 1회만
+
     // 태그 필터 바 동적 업데이트
     const allTags = [...new Set(todos.flatMap(t => t.tags || []))];
     const tagRow = $('todo-tag-row');
@@ -1362,8 +1378,9 @@ function addBoardPostToTodo(post, btn) {
     const catTag = { training: '필수연수', notice: '공지', etc: '기타' };
     const tags = [catTag[post.category] || post.category];
     if (post.deadline) tags.push('마감' + post.deadline);
+    const newId = Date.now().toString();
     todos.unshift({
-        id: Date.now().toString(),
+        id: newId,
         text: post.title,
         tags,
         priority: post.category === 'training' ? 'high' : 'normal',
@@ -1371,6 +1388,7 @@ function addBoardPostToTodo(post, btn) {
         created: new Date().toISOString(),
         sourcePostId: post.id,
     });
+    justAddedTodoId = newId;
     saveTodos();
     renderTodos();
     btn.textContent = '✓ 추가됨';
@@ -1429,7 +1447,10 @@ function initFirebase() {
             boardUser = user;
             renderBoardAuth();
             if (user) subscribeToBoardPosts();
-            else if (boardUnsubscribe) { boardUnsubscribe(); boardUnsubscribe = null; boardPosts = []; renderBoardPosts(); }
+            else if (boardUnsubscribe) {
+                boardUnsubscribe(); boardUnsubscribe = null;
+                boardPosts = []; boardSeenIds = new Set(); renderBoardPosts();
+            }
         });
     } catch(e) { console.warn('Firebase init failed:', e); }
 }
@@ -1487,6 +1508,7 @@ function renderBoardPosts() {
     const list = $('board-list');
     if (!list || !boardUser) return;
     const filtered = boardFilter === 'all' ? boardPosts : boardPosts.filter(p => p.category === boardFilter);
+    const prevScroll = list.scrollTop;   // 스크롤 위치 보존
     list.innerHTML = '';
     if (!filtered.length) {
         const empty = el('div', 'board-empty'); empty.textContent = '게시물이 없습니다.'; list.appendChild(empty); return;
@@ -1498,7 +1520,9 @@ function renderBoardPosts() {
     };
     filtered.forEach(post => {
         const ci = CAT[post.category] || CAT.etc;
-        const card = el('div', 'board-post'); card.style.borderLeftColor = ci.color;
+        const isNew = !boardSeenIds.has(post.id);   // 이번에 처음 보는 글
+        const card = el('div', 'board-post' + (isNew ? ' item-enter' : ''));
+        card.style.borderLeftColor = ci.color;
         const badge = el('div', 'board-cat-badge ' + ci.cls); badge.textContent = ci.label; card.appendChild(badge);
         const title = el('div', 'board-post-title'); title.textContent = post.title; card.appendChild(title);
         if (post.content) { const c = el('div'); c.style.cssText='font-size:11px;color:rgba(255,255,255,0.6);margin:2px 0;line-height:1.4;'; c.textContent=post.content; card.appendChild(c); }
@@ -1527,6 +1551,9 @@ function renderBoardPosts() {
         }
         list.appendChild(card);
     });
+    // 표시한 글 기록(다음 렌더부터는 애니메이션 생략) + 스크롤 복원
+    boardSeenIds = new Set(boardPosts.map(p => p.id));
+    list.scrollTop = prevScroll;
 }
 
 function relTime(d) {
