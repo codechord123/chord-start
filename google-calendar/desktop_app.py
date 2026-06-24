@@ -241,6 +241,33 @@ _ERROR_HTML = """<!doctype html><html lang='ko'><head><meta charset='utf-8'>
    트레이(📅) → 설정 → 새로고침 으로 다시 시도할 수 있습니다.</p>
 </div></body></html>"""
 
+# 내장 엔진(QtWebEngine)이 아예 켜지지 않을 때(주로 Python 버전 문제) 안내
+_ENGINE_HTML = """<!doctype html><html lang='ko'><head><meta charset='utf-8'>
+<style>
+ html,body{height:100%;margin:0;background:#0f172a;color:#e2e8f0;
+   font-family:'Malgun Gothic',sans-serif;
+   display:flex;align-items:center;justify-content:center}
+ .b{max-width:460px;text-align:left;padding:32px}
+ h1{font-size:19px;margin:0 0 14px;color:#fbbf24;text-align:center}
+ p{font-size:14px;line-height:1.75;color:#cbd5e1;margin:8px 0}
+ ol{font-size:14px;line-height:1.9;color:#cbd5e1;padding-left:20px}
+ code{background:#1e293b;padding:2px 7px;border-radius:6px;color:#93c5fd}
+ b{color:#fff}
+</style></head><body><div class='b'>
+ <h1>내장 브라우저 엔진이 켜지지 않았습니다</h1>
+ <p>화면(캘린더)을 그리는 엔진이 시작되지 않았습니다.<br>
+    대부분 <b>Python 버전이 너무 최신</b>일 때 생깁니다.</p>
+ <p><b>해결 방법 (권장):</b></p>
+ <ol>
+   <li>현재 Python(3.14 등)을 제거</li>
+   <li><code>python.org</code> 에서 <b>Python 3.12</b> 설치<br>
+       (설치 시 "Add python.exe to PATH" 체크)</li>
+   <li><code>install.bat</code> 다시 실행</li>
+ </ol>
+ <p style='margin-top:14px;color:#64748b;font-size:12px'>
+   같은 폴더의 <code>widget.log</code> 를 보내주시면 더 정확히 도와드립니다.</p>
+</div></body></html>"""
+
 
 # ── 드래그 핸들 (위젯 상단, 투명 — 버튼 전혀 없음) ─────────────────────────
 class _DragHandle(QWidget):
@@ -326,10 +353,14 @@ class CalendarWidget(QWidget):
         self._view.setStyleSheet("background:#0f172a;")
         # 로드 실패(흰 화면) 시 한 번 자동 재시도
         self._reloaded_once = False
+        self._loaded = False
         self._view.loadStarted.connect(lambda: wlog("loadStarted " + self._url))
         self._view.loadFinished.connect(self._on_load_finished)
         wlog("위젯 생성, URL = " + url)
         self._view.setUrl(QUrl(url))
+        wlog("setUrl 호출 완료 — 엔진 응답 대기")
+        # 감시 타이머: 8초 안에 로드가 시작/완료되지 않으면 엔진 이상으로 간주
+        QTimer.singleShot(8000, self._watchdog)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -424,9 +455,21 @@ class CalendarWidget(QWidget):
         self._reloaded_once = False
         self._view.setUrl(QUrl(self._url))
 
+    def _watchdog(self):
+        # 8초가 지나도 한 번도 로드되지 않음 = 내장 엔진(QtWebEngine)이 안 켜짐.
+        # 대개 Python 버전이 너무 최신이거나 PyQt6-WebEngine 설치 문제.
+        if not self._loaded:
+            wlog("[경고] 8초간 로드 없음 — QtWebEngine 미동작 의심 "
+                 "(Python 버전/WebEngine 설치 확인 필요)")
+            try:
+                self._view.setHtml(_ENGINE_HTML)
+            except Exception:
+                pass
+
     def _on_load_finished(self, ok: bool):
         wlog("loadFinished ok=%s" % ok)
         if ok:
+            self._loaded = True
             return
         # 로드 실패(흰 화면/연결 실패) → 1초 뒤 한 번만 자동 재시도
         if not self._reloaded_once:

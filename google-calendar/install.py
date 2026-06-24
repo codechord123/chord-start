@@ -68,6 +68,22 @@ def main():
     log(f"  위치   : {HERE}")
     log()
 
+    # 너무 최신 Python(3.14+)은 PyQt6-WebEngine 이 아직 불안정해서
+    # 위젯이 '흰 화면'으로 멈출 수 있다. 미리 강하게 안내한다.
+    if sys.version_info[:2] >= (3, 14):
+        log("  " + "!" * 56)
+        log(f"  [경고] 현재 Python {sys.version_info.major}."
+            f"{sys.version_info.minor} 은(는) 너무 최신 버전입니다.")
+        log("         내장 브라우저(PyQt6-WebEngine)가 제대로 동작하지")
+        log("         않아 위젯이 '흰 화면'으로 멈출 수 있습니다.")
+        log("")
+        log("         → python.org 에서 Python 3.12 를 설치한 뒤")
+        log("           install.bat 을 다시 실행하시길 권장합니다.")
+        log("  " + "!" * 56)
+        log("")
+        log("  (그래도 일단 이대로 설치를 계속 시도합니다...)")
+        log()
+
     # 필수 파일 확인
     for path, name in ((SCRIPT, "desktop_app.py"), (HTML, "index.html")):
         if not os.path.exists(path):
@@ -123,6 +139,20 @@ def main():
         log(f"       \"{sys.executable}\" -m pip install "
             "--force-reinstall PyQt6 PyQt6-WebEngine")
         return 1
+    # 설치된 버전 출력 (PyQt6 와 WebEngine 버전이 어긋나면 흰 화면 원인이 됨)
+    try:
+        out = subprocess.check_output(
+            [sys.executable, "-c",
+             "import importlib.metadata as m;"
+             "print('PyQt6', m.version('PyQt6'));"
+             "print('PyQt6-Qt6', m.version('PyQt6-Qt6'));"
+             "print('PyQt6-WebEngine', m.version('PyQt6-WebEngine'));"
+             "print('PyQt6-WebEngine-Qt6', m.version('PyQt6-WebEngine-Qt6'))"],
+            stderr=subprocess.STDOUT, text=True)
+        for line in out.strip().splitlines():
+            log("      " + line)
+    except Exception:
+        pass
     log("      정상.")
     log()
 
