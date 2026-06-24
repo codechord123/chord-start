@@ -25,8 +25,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 # 강제하면 어떤 PC 에서도 안정적으로 그려진다. (캘린더는 GPU 가속이 필요 없음)
 os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
-    "--disable-gpu --disable-gpu-compositing --no-sandbox "
-    "--disable-features=Vulkan --enable-features=OverlayScrollbar")
+    "--disable-gpu --disable-gpu-compositing --no-sandbox")
 os.environ.setdefault("QT_OPENGL", "software")
 
 try:
@@ -62,6 +61,27 @@ else:
 
 APP_DIR   = BUNDLE_DIR          # 정적 파일 서빙 기준 폴더
 HTML_FILE = 'index.html'
+
+# ── 진단 로그 (흰 화면/멈춤 원인 추적용) ──────────────────────────────────
+# 위젯이 무엇을 했는지 widget.log 에 남긴다. 문제가 생기면 이 파일을 보면 된다.
+_LOG_PATH = os.path.join(DATA_DIR, "widget.log")
+
+
+def wlog(msg: str):
+    try:
+        import time
+        line = time.strftime("%H:%M:%S") + "  " + str(msg)
+    except Exception:
+        line = str(msg)
+    try:
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
 
 # ── Windows WorkerW (벽지 레이어 임베딩) ──────────────────────────────────
 try:
@@ -202,6 +222,26 @@ def _start_server(port):
     return s
 
 
+# 로드 실패 시 흰 화면 대신 보여줄 어두운 진단 페이지
+_ERROR_HTML = """<!doctype html><html lang='ko'><head><meta charset='utf-8'>
+<style>
+ html,body{height:100%;margin:0;background:#0f172a;color:#e2e8f0;
+   font-family:'Malgun Gothic',sans-serif;
+   display:flex;align-items:center;justify-content:center}
+ .b{max-width:420px;text-align:center;padding:32px}
+ h1{font-size:20px;margin:0 0 12px;color:#f87171}
+ p{font-size:14px;line-height:1.7;color:#94a3b8;margin:6px 0}
+ code{background:#1e293b;padding:2px 7px;border-radius:6px;color:#93c5fd}
+</style></head><body><div class='b'>
+ <h1>화면을 불러오지 못했습니다</h1>
+ <p>잠시 후 자동으로 다시 시도합니다.<br>계속 이 화면이면 아래를 확인하세요.</p>
+ <p>· 주소: <code>__URL__</code></p>
+ <p>· 백신/방화벽이 로컬 연결을 막고 있지 않은지<br>· 폴더 안에 <code>index.html</code> 이 있는지</p>
+ <p style='margin-top:16px;color:#64748b;font-size:12px'>
+   트레이(📅) → 설정 → 새로고침 으로 다시 시도할 수 있습니다.</p>
+</div></body></html>"""
+
+
 # ── 드래그 핸들 (위젯 상단, 투명 — 버튼 전혀 없음) ─────────────────────────
 class _DragHandle(QWidget):
     def __init__(self, win):
@@ -275,12 +315,20 @@ class CalendarWidget(QWidget):
 
         page = _CalPage(profile, None)
         page.setBackgroundColor(QColor("#0f172a"))   # 로딩 중에도 어두운 배경
+        # 렌더 프로세스가 죽으면(흰 화면의 주요 원인) 기록 후 다시 로드
+        try:
+            page.renderProcessTerminated.connect(self._on_render_dead)
+        except Exception:
+            pass
 
         self._view = QWebEngineView()
         self._view.setPage(page)
+        self._view.setStyleSheet("background:#0f172a;")
         # 로드 실패(흰 화면) 시 한 번 자동 재시도
         self._reloaded_once = False
+        self._view.loadStarted.connect(lambda: wlog("loadStarted " + self._url))
         self._view.loadFinished.connect(self._on_load_finished)
+        wlog("위젯 생성, URL = " + url)
         self._view.setUrl(QUrl(url))
 
         lay = QVBoxLayout(self)
@@ -377,10 +425,24 @@ class CalendarWidget(QWidget):
         self._view.setUrl(QUrl(self._url))
 
     def _on_load_finished(self, ok: bool):
+        wlog("loadFinished ok=%s" % ok)
+        if ok:
+            return
         # 로드 실패(흰 화면/연결 실패) → 1초 뒤 한 번만 자동 재시도
-        if not ok and not self._reloaded_once:
+        if not self._reloaded_once:
             self._reloaded_once = True
             QTimer.singleShot(1000, lambda: self._view.setUrl(QUrl(self._url)))
+        else:
+            # 재시도도 실패 → 흰 화면 대신 어두운 진단 화면을 띄운다
+            wlog("재시도 실패 → 진단 화면 표시")
+            self._view.setHtml(_ERROR_HTML.replace("__URL__", self._url))
+
+    def _on_render_dead(self, status, code):
+        # 렌더 프로세스 비정상 종료 = 대표적 '흰 화면' 원인. 기록 후 1회 재로드.
+        wlog("renderProcessTerminated status=%s code=%s" % (status, code))
+        if not self._reloaded_once:
+            self._reloaded_once = True
+            QTimer.singleShot(800, lambda: self._view.setUrl(QUrl(self._url)))
 
     def save_geo(self):
         self._cfg.setValue("geometry", self.saveGeometry())
@@ -653,19 +715,33 @@ def _make_icon() -> QIcon:
 
 # ── 메인 ──────────────────────────────────────────────────────────────────
 def main():
+    wlog("=" * 50)
+    wlog("위젯 시작  python=%s" % sys.version.split()[0])
+    wlog("APP_DIR=%s" % APP_DIR)
+    wlog("CHROMIUM_FLAGS=%s" % os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS"))
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("선생님 캘린더")
 
     html_path = os.path.join(APP_DIR, HTML_FILE)
     if not os.path.exists(html_path):
+        wlog("[치명] index.html 없음: %s" % html_path)
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.critical(None, "오류",
             f"{HTML_FILE} 파일을 찾을 수 없습니다.\n{html_path}")
         sys.exit(1)
 
     port = _find_free_port()
-    _start_server(port)
+    try:
+        _start_server(port)
+        wlog("로컬 서버 시작 OK  port=%d" % port)
+    except Exception as e:
+        wlog("[치명] 서버 시작 실패: %r" % e)
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "오류",
+            f"로컬 서버를 시작하지 못했습니다.\n{e}")
+        sys.exit(1)
     url = f"http://localhost:{port}/{HTML_FILE}"
 
     widget   = CalendarWidget(url)
@@ -714,4 +790,22 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        wlog("[치명적 예외]\n" + tb)
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            if QApplication.instance() is None:
+                QApplication(sys.argv)
+            QMessageBox.critical(
+                None, "선생님 캘린더 — 오류",
+                "위젯 실행 중 오류가 발생했습니다.\n\n"
+                + tb + "\n\n이 내용과 widget.log 파일을 보내주세요.")
+        except Exception:
+            pass
+        sys.exit(1)
