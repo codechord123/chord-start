@@ -10,13 +10,14 @@
     <style>
         * { box-sizing: border-box; }
 
-        body {
+        html, body {
             margin: 0; padding: 0;
             font-family: 'Noto Sans KR', sans-serif;
-            min-height: 100vh;
-            display: flex; align-items: center; justify-content: center;
-            background: url('https://images.unsplash.com/photo-1507525428034-b723cf961d3e?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
-            background-size: cover;
+            width: 100vw; height: 100vh;
+            overflow: hidden;
+            /* 위젯 모드: 배경 투명 → 바탕화면이 비치고 둥근 카드만 떠 보인다.
+               (데스크탑 앱이 창 배경을 투명 처리하므로 검은 사각형이 사라짐) */
+            background: transparent;
             user-select: none;
         }
 
@@ -29,6 +30,7 @@
         .widget-wrap {
             display: flex;
             flex-direction: row;
+            width: 100%; height: 100%;
             /* WorkerW에 박힌 위젯에선 backdrop-filter가 합성되지 않으므로
                불투명 그라데이션 배경으로 대체 (가볍고 또렷함) */
             background: linear-gradient(135deg, rgba(15,23,42,0.82), rgba(10,18,35,0.88));

@@ -213,6 +213,8 @@ class CalendarWidget(QWidget):
 
         self.setWindowTitle("선생님 캘린더")
         self._apply_flags()
+        # 창 배경 투명 → 바탕화면이 비쳐 '프로그램 창'이 아닌 '위젯'처럼 보인다
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         # 영구 프로필 — TODO 등 localStorage 저장 유지
         profile = QWebEngineProfile("teacher_calendar", self)
@@ -231,23 +233,28 @@ class CalendarWidget(QWidget):
         )
 
         self._view = QWebEngineView()
-        self._view.setPage(_CalendarPage(profile, self._view))
+        page = _CalendarPage(profile, self._view)
+        # 웹뷰 배경도 투명 처리 (기본은 흰색 → 둥근 모서리 밖이 흰 사각형으로 남음)
+        page.setBackgroundColor(QColor(Qt.GlobalColor.transparent))
+        self._view.setPage(page)
+        self._view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._view.setStyleSheet("background: transparent;")
         self._view.setUrl(QUrl(url))
 
-        self._bar = DragBar(self)
-
+        # 웹뷰가 창 전체를 채우고, 드래그바·크기조절 그립은 그 위에 겹쳐(오버레이)
+        # 떠 있게 한다 → 둥근 카드가 창을 꽉 채워 '프로그램 창'이 아닌 위젯처럼 보인다.
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._bar)
         root.addWidget(self._view, 1)
 
+        self._bar = DragBar(self)
+        self._bar.setParent(self)
+        self._bar.raise_()
+
         self._grip = QSizeGrip(self)
-        grow = QHBoxLayout()
-        grow.setContentsMargins(0, 0, 2, 2)
-        grow.addStretch()
-        grow.addWidget(self._grip)
-        root.addLayout(grow)
+        self._grip.setParent(self)
+        self._grip.raise_()
 
         # 저장된 위치/크기 복원
         geo = self._settings.value("geometry")
@@ -343,6 +350,14 @@ class CalendarWidget(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        # 오버레이 크롬 위치 재계산 (드래그바=상단 전체, 그립=우하단 모서리)
+        if hasattr(self, "_bar"):
+            self._bar.setGeometry(0, 0, self.width(), 22)
+            self._bar.raise_()
+        if hasattr(self, "_grip"):
+            gs = 16
+            self._grip.setGeometry(self.width() - gs, self.height() - gs, gs, gs)
+            self._grip.raise_()
         self.save_geometry()
 
     def closeEvent(self, e):
