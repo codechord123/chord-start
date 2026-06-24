@@ -29,14 +29,13 @@
         .widget-wrap {
             display: flex;
             flex-direction: row;
-            background: rgba(10, 18, 35, 0.45);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
+            /* WorkerW에 박힌 위젯에선 backdrop-filter가 합성되지 않으므로
+               불투명 그라데이션 배경으로 대체 (가볍고 또렷함) */
+            background: linear-gradient(135deg, rgba(15,23,42,0.82), rgba(10,18,35,0.88));
             border: 1px solid rgba(255,255,255,0.13);
             box-shadow: 0 12px 48px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08);
             border-radius: 20px;
             overflow: hidden;
-            resize: both;
             transition: box-shadow 0.2s;
             cursor: default;
         }
@@ -59,17 +58,20 @@
             flex-direction: column;
             border-left: 1px solid rgba(255,255,255,0.1);
             overflow: hidden;
-            transition: width 0.3s cubic-bezier(0.4,0,0.2,1),
-                        opacity 0.25s ease,
-                        padding 0.3s;
+            transition: width 0.28s cubic-bezier(0.4,0,0.2,1);
+            will-change: width;
             color: white;
         }
         .todo-panel.closed {
             width: 0;
-            opacity: 0;
             pointer-events: none;
             border-left: none;
         }
+        /* 패널 내용은 항상 280px 고정 → 폭이 줄어도 글자가 우그러지지 않고 깔끔히 잘림 */
+        .todo-panel > * { width: 280px; box-sizing: border-box; }
+        /* 탭 전환 페이드 */
+        @keyframes panelFade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        .panel-fade { animation: panelFade 0.2s ease; }
 
         /* 헤더 */
         .header {
@@ -1387,8 +1389,14 @@ function switchPanelTab(tab) {
     currentPanelTab = tab;
     $('tab-todo').classList.toggle('active', tab === 'todo');
     $('tab-board').classList.toggle('active', tab === 'board');
-    $('todo-content').style.display = tab === 'todo' ? 'flex' : 'none';
-    $('board-content').style.display = tab === 'board' ? 'flex' : 'none';
+    const show = tab === 'todo' ? $('todo-content') : $('board-content');
+    const hide = tab === 'todo' ? $('board-content') : $('todo-content');
+    hide.style.display = 'none';
+    show.style.display = 'flex';
+    // 부드러운 페이드 인 (재적용 위해 클래스 토글)
+    show.classList.remove('panel-fade');
+    void show.offsetWidth;
+    show.classList.add('panel-fade');
 }
 
 function togglePanel(tab) {
