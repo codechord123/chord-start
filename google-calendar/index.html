@@ -15,9 +15,10 @@
             font-family: 'Noto Sans KR', sans-serif;
             width: 100vw; height: 100vh;
             overflow: hidden;
-            /* 위젯 모드: 배경 투명 → 바탕화면이 비치고 둥근 카드만 떠 보인다.
-               (데스크탑 앱이 창 배경을 투명 처리하므로 검은 사각형이 사라짐) */
-            background: transparent;
+            /* 불투명한 어두운 배경으로 창을 가득 채운다.
+               (투명 배경은 일부 PC에서 '흰 화면' 버그를 일으켜 쓰지 않는다.
+                반투명이 필요하면 위젯 앱의 '투명도' 슬라이더로 조절한다.) */
+            background: #0f172a;
             user-select: none;
         }
 

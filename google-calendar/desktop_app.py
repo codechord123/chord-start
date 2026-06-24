@@ -236,7 +236,9 @@ class CalendarWidget(QWidget):
 
         self.setWindowTitle("선생님 캘린더")
         self._apply_flags()
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # 주의: WA_TranslucentBackground 는 일부 GPU/드라이버에서 '흰 화면'으로
+        # 잘못 렌더링되므로 쓰지 않는다. 대신 불투명한 어두운 배경으로 칠하고,
+        # 반투명이 필요하면 setWindowOpacity(창 전체 알파)로 처리한다.
 
         # 영구 WebEngine 프로파일
         profile = QWebEngineProfile("teacher_cal", self)
@@ -252,12 +254,10 @@ class CalendarWidget(QWidget):
             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
         page = _CalPage(profile, None)
-        page.setBackgroundColor(QColor(0, 0, 0, 0))
+        page.setBackgroundColor(QColor("#0f172a"))   # 로딩 중에도 어두운 배경
 
         self._view = QWebEngineView()
         self._view.setPage(page)
-        self._view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self._view.setStyleSheet("background:transparent;")
         self._view.setUrl(QUrl(url))
 
         lay = QVBoxLayout(self)
