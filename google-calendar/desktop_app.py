@@ -25,8 +25,10 @@ from urllib.parse import urlparse, parse_qs, unquote
 # 강제하면 어떤 PC 에서도 안정적으로 그려진다. (캘린더는 GPU 가속이 필요 없음)
 os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
-    "--disable-gpu --disable-gpu-compositing --no-sandbox")
-os.environ.setdefault("QT_OPENGL", "software")
+    "--no-sandbox --in-process-gpu --disable-extensions")
+# QT_OPENGL=software 는 설정하지 않는다.
+# --disable-gpu 를 쓰면 Chromium 이 렌더링해도 화면에 합성(composite)이 안 돼
+# loadFinished ok=True 인데도 흰 화면이 유지되는 현상이 생긴다.
 
 try:
     from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer, QPoint
@@ -359,8 +361,9 @@ class CalendarWidget(QWidget):
         wlog("위젯 생성, URL = " + url)
         self._view.setUrl(QUrl(url))
         wlog("setUrl 호출 완료 — 엔진 응답 대기")
-        # 감시 타이머: 8초 안에 로드가 시작/완료되지 않으면 엔진 이상으로 간주
-        QTimer.singleShot(8000, self._watchdog)
+        # 감시 타이머: 20초 안에 로드가 완료되지 않으면 엔진 이상으로 간주
+        # (Chromium 초기화가 느린 PC 에서 8초면 부족해 오판이 생긴다)
+        QTimer.singleShot(20000, self._watchdog)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
