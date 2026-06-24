@@ -1,0 +1,6 @@
+# Python
+__pycache__/
+*.pyc
+
+# Desktop widget runtime data (local login cache / web storage)
+google-calendar/.webdata/
