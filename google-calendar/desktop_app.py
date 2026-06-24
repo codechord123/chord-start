@@ -389,19 +389,20 @@ def main():
     tray = QSystemTrayIcon(make_icon(), app)
     tray.setToolTip("선생님 캘린더")
 
-    # 시작 1초 뒤 바탕화면에 자동으로 박는다 (창 핸들·이벤트 루프 준비 후)
-    def _auto_embed():
-        if win.embed_into_desktop():
-            if not win._settings.value("hint_shown"):
-                tray.showMessage(
-                    "선생님 캘린더 위젯",
-                    "바탕화면에 고정되었습니다.\n"
-                    "로그인·편집은 트레이(📅) 우클릭 → '조작 모드'를 누르세요.",
-                    QSystemTrayIcon.MessageIcon.Information, 6000)
-                win._settings.setValue("hint_shown", True)
-        else:
-            win.lower()   # 폴백: 그냥 아래로 깔기
-    QTimer.singleShot(1000, _auto_embed)
+    # 바탕화면 위젯으로 맨 아래에 깔되, 일반 창이라 스크롤·클릭·크기조절 모두 가능.
+    # (WorkerW 에 박으면 입력이 막히므로 기본값으로 쓰지 않는다.)
+    def _settle():
+        win.lower()
+        if not win._settings.value("hint_shown"):
+            tray.showMessage(
+                "선생님 캘린더 위젯",
+                "바탕화면 위젯으로 실행됐습니다.\n"
+                "• 위쪽 끝에 마우스 → 드래그하여 이동\n"
+                "• 오른쪽 아래 모서리 → 크기 조절\n"
+                "• 숨기기/종료는 트레이(📅) 클릭",
+                QSystemTrayIcon.MessageIcon.Information, 6000)
+            win._settings.setValue("hint_shown", True)
+    QTimer.singleShot(600, _settle)
 
     menu = QMenu()
     menu.setStyleSheet(
@@ -414,16 +415,17 @@ def main():
     a_show.triggered.connect(win.toggle_visible)
     menu.addAction(a_show)
 
-    a_embed = QAction("🔧 조작 모드 (로그인·이동·편집)", app)
+    a_pin = QAction("📌 항상 위에 띄우기", app)
+    a_pin.triggered.connect(win.toggle_pin)
+    menu.addAction(a_pin)
+
+    # 고급: 아이콘 뒤 벽지 레이어에 완전히 박기 (입력 불가 = 보기 전용)
+    a_embed = QAction("🖼️ 벽지에 완전히 박기 (보기 전용)", app)
     a_embed.triggered.connect(win.toggle_embed)
     menu.addAction(a_embed)
     if not HAS_WIN32:
         a_embed.setEnabled(False)
-        a_embed.setText("🔧 조작 모드 (pywin32 필요)")
-
-    a_pin = QAction("📌 항상 위에 띄우기 (보조)", app)
-    a_pin.triggered.connect(win.toggle_pin)
-    menu.addAction(a_pin)
+        a_embed.setText("🖼️ 벽지에 박기 (pywin32 필요)")
 
     a_reload = QAction("새로고침", app)
     a_reload.triggered.connect(win.reload_page)
