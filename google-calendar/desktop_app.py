@@ -20,15 +20,11 @@ import os, sys, json, socket, threading, functools, webbrowser, http.server
 from urllib.parse import urlparse, parse_qs, unquote
 
 # ── 흰 화면(white screen) 방지 ────────────────────────────────────────────
-# QtWebEngine 은 일부 Windows GPU/드라이버에서 화면을 못 그리고 하얗게 멈춘다.
-# QApplication / QtWebEngine 을 만들기 "전에" 아래 플래그로 소프트웨어 렌더링을
-# 강제하면 어떤 PC 에서도 안정적으로 그려진다. (캘린더는 GPU 가속이 필요 없음)
-os.environ.setdefault(
-    "QTWEBENGINE_CHROMIUM_FLAGS",
-    "--no-sandbox --in-process-gpu --disable-extensions")
-# QT_OPENGL=software 는 설정하지 않는다.
-# --disable-gpu 를 쓰면 Chromium 이 렌더링해도 화면에 합성(composite)이 안 돼
-# loadFinished ok=True 인데도 흰 화면이 유지되는 현상이 생긴다.
+# 핵심은 Chromium 플래그가 아니라 Qt 의 OpenGL 설정이다(아래 main() 에서 처리).
+# Chromium 플래그는 샌드박스만 끈다(제한된 환경에서 렌더 프로세스 차단 방지).
+#   · --disable-gpu      → load 는 되는데 화면 합성이 안 돼 흰 화면 (사용 금지)
+#   · --in-process-gpu   → 일부 PC 에서 로드 자체가 멈춤 (사용 금지)
+os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
 
 try:
     from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer, QPoint
@@ -459,20 +455,32 @@ class CalendarWidget(QWidget):
         self._view.setUrl(QUrl(self._url))
 
     def _watchdog(self):
-        # 8초가 지나도 한 번도 로드되지 않음 = 내장 엔진(QtWebEngine)이 안 켜짐.
-        # 대개 Python 버전이 너무 최신이거나 PyQt6-WebEngine 설치 문제.
+        # 20초가 지나도 한 번도 로드되지 않음 = 내장 엔진(QtWebEngine)이 안 켜짐.
         if not self._loaded:
-            wlog("[경고] 8초간 로드 없음 — QtWebEngine 미동작 의심 "
-                 "(Python 버전/WebEngine 설치 확인 필요)")
+            wlog("[경고] 20초간 로드 없음 — QtWebEngine 미동작 의심")
             try:
                 self._view.setHtml(_ENGINE_HTML)
             except Exception:
                 pass
 
+    def _force_paint(self):
+        # 로드는 됐는데 화면이 안 그려지는 경우를 대비해 강제 리페인트.
+        # 창을 1px 늘렸다 되돌리고, 뷰를 숨겼다 다시 보여 합성을 깨운다.
+        try:
+            self._view.hide()
+            self._view.show()
+            s = self.size()
+            self.resize(s.width(), s.height() + 1)
+            self.resize(s)
+            self._view.update()
+        except Exception:
+            pass
+
     def _on_load_finished(self, ok: bool):
         wlog("loadFinished ok=%s" % ok)
         if ok:
             self._loaded = True
+            QTimer.singleShot(50, self._force_paint)
             return
         # 로드 실패(흰 화면/연결 실패) → 1초 뒤 한 번만 자동 재시도
         if not self._reloaded_once:
@@ -765,6 +773,27 @@ def main():
     wlog("위젯 시작  python=%s" % sys.version.split()[0])
     wlog("APP_DIR=%s" % APP_DIR)
     wlog("CHROMIUM_FLAGS=%s" % os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS"))
+
+    # ── 흰 화면의 진짜 해결책 ──────────────────────────────────────────
+    # QApplication 생성 "전에" 설정해야 한다.
+    #   AA_ShareOpenGLContexts : Chromium 이 그린 화면을 Qt 창으로 넘기는
+    #       컨텍스트 공유. 없으면 load 는 돼도 화면이 흰색으로 남는다.
+    #   AA_UseSoftwareOpenGL   : 문제 있는 GPU/드라이버를 우회해 소프트웨어
+    #       OpenGL(PyQt6 동봉 opengl32sw.dll)로 강제 → 어떤 PC 든 그려진다.
+    # 'TC_GL' 환경변수로 백엔드를 바꿀 수 있다(software/desktop/angle).
+    try:
+        Aa = Qt.ApplicationAttribute
+        QApplication.setAttribute(Aa.AA_ShareOpenGLContexts, True)
+        gl = os.environ.get("TC_GL", "software").lower()
+        if gl == "software":
+            QApplication.setAttribute(Aa.AA_UseSoftwareOpenGL, True)
+        elif gl == "desktop":
+            QApplication.setAttribute(Aa.AA_UseDesktopOpenGL, True)
+        elif gl == "angle":
+            QApplication.setAttribute(Aa.AA_UseOpenGLES, True)
+        wlog("OpenGL 백엔드 = %s (+ShareOpenGLContexts)" % gl)
+    except Exception as e:
+        wlog("[경고] OpenGL 속성 설정 실패: %r" % e)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
