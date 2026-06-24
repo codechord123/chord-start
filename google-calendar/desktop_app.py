@@ -23,17 +23,25 @@ from urllib.parse import urlparse, parse_qs, unquote
 # QtWebEngine 은 'from PyQt6.QtWebEngineWidgets import ...' 시점에 Chromium 을
 # 초기화하며 QTWEBENGINE_CHROMIUM_FLAGS 를 읽는다.
 # main() 이나 QApplication 생성 직전에 설정하면 이미 늦다 → 플래그 무시됨.
-#   --no-sandbox       : 제한 환경(학교 AppArmor 등)에서 렌더 프로세스 차단 방지
-#   --no-proxy-server  : 학교/회사 프록시가 localhost 연결을 가로채는 문제 방지
-#   --disable-gpu      ❌ 화면 합성이 안 돼 흰 화면 (사용 금지)
-#   --in-process-gpu   ❌ 일부 PC 에서 로드 자체가 멈춤 (사용 금지)
+#
+#   --no-sandbox          : 제한 환경에서 렌더 프로세스 차단 방지
+#   --no-proxy-server     : 학교/회사 프록시가 localhost 연결을 가로채는 문제 방지
+#   --allow-file-access-from-files : setHtml 로 로드된 페이지의 동일-출처 제한 완화
+#   --disable-web-security : setHtml baseUrl 이 null origin 으로 처리될 때 CORS 우회
+#                            (Python 3.14 + PyQt6 조합에서 발생하는 known issue)
+#   --disable-gpu          ❌ 화면 합성 안 됨 — 사용 금지
+#   --in-process-gpu       ❌ 일부 PC 에서 로드 자체 멈춤 — 사용 금지
 _cf = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-if "--no-sandbox" not in _cf:
-    _cf = ("--no-sandbox " + _cf).strip()
-if "--no-proxy-server" not in _cf:
-    _cf = (_cf + " --no-proxy-server").strip()
+for _flag in [
+    "--no-sandbox",
+    "--no-proxy-server",
+    "--allow-file-access-from-files",
+    "--disable-web-security",
+]:
+    if _flag not in _cf:
+        _cf = (_cf + " " + _flag).strip()
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _cf
-del _cf
+del _cf, _flag
 
 try:
     from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer, QPoint

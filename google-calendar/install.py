@@ -4,6 +4,7 @@
 install.bat 이 이 파일을 호출합니다. (직접 실행해도 됩니다)
 
 하는 일
+  0) Python 버전 확인 — 3.14+ 이면 Python 3.12 자동 설치 후 재실행
   1) 이전 버전 정리 (실행 중인 위젯 종료 + 시작프로그램 해제)
   2) 필요한 패키지 설치 (PyQt6, PyQt6-WebEngine)
   3) 설치 확인
@@ -13,6 +14,7 @@ import os
 import sys
 import subprocess
 import traceback
+import platform
 
 # Python 3.7+ : 콘솔 한글 출력 보장
 try:
@@ -29,6 +31,215 @@ HERE   = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "desktop_app.py")
 HTML   = os.path.join(HERE, "index.html")
 
+# ── Python 3.12 자동 설치 지원 ───────────────────────────────────────────────
+_PY312_VER     = "3.12.9"
+_PY312_URL_64  = f"https://www.python.org/ftp/python/{_PY312_VER}/python-{_PY312_VER}-amd64.exe"
+_PY312_URL_32  = f"https://www.python.org/ftp/python/{_PY312_VER}/python-{_PY312_VER}.exe"
+
+
+def _is_64bit():
+    return platform.machine().endswith("64")
+
+
+def _find_py312():
+    """py.exe 런처로 Python 3.12 를 찾아 실행 파일 경로를 반환. 없으면 None."""
+    try:
+        out = subprocess.check_output(
+            ["py", "-3.12", "-c", "import sys; print(sys.executable)"],
+            stderr=subprocess.DEVNULL, text=True)
+        path = out.strip()
+        if path and os.path.exists(path):
+            return path
+    except Exception:
+        pass
+    return None
+
+
+def _download_python312():
+    """Python 3.12 설치 파일을 다운로드하고 설치한다. 성공하면 True 반환."""
+    import urllib.request
+    import tempfile
+
+    url  = _PY312_URL_64 if _is_64bit() else _PY312_URL_32
+    dest = os.path.join(tempfile.gettempdir(), f"python-{_PY312_VER}-installer.exe")
+
+    log(f"  다운로드 중: {url}")
+    log("  (약 25 MB — 인터넷 속도에 따라 1 ~ 5 분 소요)")
+
+    try:
+        def _progress(count, block, total):
+            if total > 0:
+                pct  = min(100, count * block * 100 // total)
+                done = min(count * block, total) / 1024 / 1024
+                tot  = total / 1024 / 1024
+                print(f"\r  진행: {pct:3d}%  ({done:.1f} / {tot:.1f} MB)   ",
+                      end="", flush=True)
+        urllib.request.urlretrieve(url, dest, _progress)
+        print()
+        log(f"  다운로드 완료.")
+    except Exception as e:
+        log(f"\n  [오류] 다운로드 실패: {e}")
+        return False
+
+    log("  Python 3.12 설치 중... (잠시 설치 창이 나타납니다)")
+    log("  설치가 완료될 때까지 기다려 주세요.")
+    ret = subprocess.call([
+        dest,
+        "/passive",           # 최소 UI (자동 진행)
+        "InstallAllUsers=0",  # 현재 사용자만 (관리자 권한 불필요)
+        "PrependPath=1",      # PATH 자동 등록
+        "Include_launcher=1", # py.exe 런처 포함
+        "Include_test=0",     # 테스트 제외 (용량 절약)
+    ])
+    try:
+        os.remove(dest)
+    except Exception:
+        pass
+    return ret == 0
+
+
+def _find_python_uninstall_command(major, minor):
+    """레지스트리에서 지정 Python 버전의 제거 커맨드를 반환. 없으면 None."""
+    if os.name != "nt":
+        return None, None
+    try:
+        import winreg
+    except ImportError:
+        return None, None
+
+    roots = [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]
+    paths = [
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+    ]
+    for root in roots:
+        for path in paths:
+            try:
+                with winreg.OpenKey(root, path) as base:
+                    count = winreg.QueryInfoKey(base)[0]
+                    for i in range(count):
+                        try:
+                            sub_name = winreg.EnumKey(base, i)
+                            with winreg.OpenKey(base, sub_name) as sub:
+                                name = winreg.QueryValueEx(sub, "DisplayName")[0]
+                                if f"Python {major}.{minor}" in str(name):
+                                    try:
+                                        cmd = winreg.QueryValueEx(
+                                            sub, "QuietUninstallString")[0]
+                                    except Exception:
+                                        cmd = winreg.QueryValueEx(
+                                            sub, "UninstallString")[0]
+                                    return cmd, name
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+    return None, None
+
+
+def _uninstall_python(major, minor):
+    """지정 Python 버전을 제거한다. 성공 여부 반환."""
+    cmd, display = _find_python_uninstall_command(major, minor)
+    if not cmd:
+        log(f"  [경고] Python {major}.{minor} 제거 프로그램을 찾지 못했습니다.")
+        log("         제어판 > 프로그램 제거 에서 직접 제거해 주세요.")
+        return False
+    log(f"  제거 중: {display}")
+    try:
+        # QuietUninstallString 이 이미 /quiet 포함 여부 확인 후 실행
+        if "/quiet" in cmd.lower() or "/passive" in cmd.lower():
+            ret = subprocess.call(cmd, shell=True)
+        else:
+            ret = subprocess.call(cmd + " /quiet", shell=True)
+        return ret == 0
+    except Exception as e:
+        log(f"  [오류] 제거 실패: {e}")
+        return False
+
+
+def _rerun_with_312(py312_path):
+    """Python 3.12 로 이 스크립트를 재실행하고 현재 프로세스를 종료한다."""
+    log(f"  Python 3.12 로 재실행합니다: {py312_path}")
+    result = subprocess.call([py312_path] + sys.argv)
+    sys.exit(result)
+
+
+def _handle_version_upgrade():
+    """Python 3.14+ 감지 시 3.12 설치 후 재실행. 실행 중이면 False 를 반환."""
+    major, minor = sys.version_info[:2]
+    if (major, minor) < (3, 14):
+        return False  # 정상 버전 — 계속 진행
+
+    log("=" * 60)
+    log(f"  Python {major}.{minor} 감지됨 — 버전 자동 조정 시작")
+    log("=" * 60)
+    log()
+    log("  PyQt6-WebEngine(내장 브라우저)이 Python 3.14 와")
+    log("  완전히 호환되지 않아 위젯이 흰 화면으로 멈출 수 있습니다.")
+    log("  Python 3.12 가 필요합니다.")
+    log()
+
+    # 이미 Python 3.12 가 설치돼 있으면 그걸로 재실행
+    py312 = _find_py312()
+    if py312:
+        log(f"  Python 3.12 발견: {py312}")
+        log()
+        _rerun_with_312(py312)   # 돌아오지 않음
+
+    # Python 3.12 없음 — 자동 설치
+    log("  Python 3.12 가 설치되어 있지 않습니다.")
+    log("  지금 자동으로 다운로드 및 설치를 진행합니다.")
+    log()
+
+    if not _download_python312():
+        log()
+        log("  [오류] Python 3.12 자동 설치에 실패했습니다.")
+        log()
+        log("  수동 설치 방법:")
+        log(f"    1. 아래 주소에서 설치 파일을 받으세요:")
+        log(f"       https://www.python.org/ftp/python/{_PY312_VER}/"
+            f"python-{_PY312_VER}-{'amd64' if _is_64bit() else ''}.exe")
+        log("    2. 설치 시 'Add python.exe to PATH' 체크")
+        log("    3. 설치 완료 후 install.bat 을 다시 실행")
+        input("\n  [Enter] 를 누르면 종료합니다...")
+        sys.exit(1)
+
+    log()
+    log("  Python 3.12 설치 완료!")
+    log()
+
+    # 설치 후 Python 3.12 경로 확인
+    py312 = _find_py312()
+    if not py312:
+        log("  [경고] py -3.12 로 Python 3.12 를 찾지 못했습니다.")
+        log("         install.bat 을 다시 실행해 주세요.")
+        input("\n  [Enter] 를 누르면 종료합니다...")
+        sys.exit(0)
+
+    # 기존 Python 3.14 제거 여부 확인
+    log("-" * 60)
+    log(f"  기존 Python {major}.{minor} 을(를) 제거하시겠습니까?")
+    log("  · '예' — 제거 (깔끔하게 정리, 권장)")
+    log("  · '아니오' — 유지 (다른 용도로 사용 중이라면 유지)")
+    log()
+    answer = input("  Python 3.14 제거? [Y/N]: ").strip().lower()
+    if answer in ("y", "ㅛ", "yes"):
+        log()
+        log(f"  Python {major}.{minor} 제거 중...")
+        if _uninstall_python(major, minor):
+            log("  제거 완료.")
+        log()
+    else:
+        log("  기존 Python 유지.")
+        log()
+
+    log("-" * 60)
+    log()
+    _rerun_with_312(py312)   # 돌아오지 않음
+    return True
+
+
+# ── 공통 유틸 ───────────────────────────────────────────────────────────────
 
 def pythonw_path():
     """콘솔 없이 실행되는 pythonw.exe 경로 (없으면 일반 python)."""
@@ -59,6 +270,8 @@ def quiet(cmd):
         return 1
 
 
+# ── 메인 ────────────────────────────────────────────────────────────────────
+
 def main():
     log("=" * 60)
     log("  선생님 캘린더 — 설치를 시작합니다")
@@ -68,21 +281,12 @@ def main():
     log(f"  위치   : {HERE}")
     log()
 
-    # 너무 최신 Python(3.14+)은 PyQt6-WebEngine 이 아직 불안정해서
-    # 위젯이 '흰 화면'으로 멈출 수 있다. 미리 강하게 안내한다.
-    if sys.version_info[:2] >= (3, 14):
-        log("  " + "!" * 56)
-        log(f"  [경고] 현재 Python {sys.version_info.major}."
-            f"{sys.version_info.minor} 은(는) 너무 최신 버전입니다.")
-        log("         내장 브라우저(PyQt6-WebEngine)가 제대로 동작하지")
-        log("         않아 위젯이 '흰 화면'으로 멈출 수 있습니다.")
-        log("")
-        log("         → python.org 에서 Python 3.12 를 설치한 뒤")
-        log("           install.bat 을 다시 실행하시길 권장합니다.")
-        log("  " + "!" * 56)
-        log("")
-        log("  (그래도 일단 이대로 설치를 계속 시도합니다...)")
-        log()
+    # ── 0) Python 버전 확인 및 자동 업그레이드 ──────────────────────────
+    _handle_version_upgrade()   # 3.14+ 이면 3.12 설치 후 재실행(돌아오지 않음)
+
+    # 여기까지 왔으면 Python 3.12 이하 → 정상 진행
+    log(f"  Python {sys.version.split()[0]} — 버전 정상")
+    log()
 
     # 필수 파일 확인
     for path, name in ((SCRIPT, "desktop_app.py"), (HTML, "index.html")):
@@ -94,7 +298,7 @@ def main():
 
     startup = startup_dir()
 
-    # ── 1) 기존 버전 정리 ──────────────────────────────────────────────
+    # ── 1) 기존 버전 정리 ───────────────────────────────────────────────
     log("[1/4] 기존 버전 정리 중...")
     quiet(["taskkill", "/f", "/im", "TeacherCalendar.exe"])
     quiet([
@@ -113,7 +317,7 @@ def main():
     log("      완료.")
     log()
 
-    # ── 2) 패키지 설치 ────────────────────────────────────────────────
+    # ── 2) 패키지 설치 ──────────────────────────────────────────────────
     log("[2/4] 필요한 패키지 설치 중...")
     log("      처음에는 수백 MB 를 내려받습니다. 몇 분 걸릴 수 있어요.")
     log("      (인터넷 연결이 필요합니다)")
@@ -129,7 +333,7 @@ def main():
     pip_install("pywin32")   # 선택 기능(벽지 박기). 실패해도 무방.
     log()
 
-    # ── 3) 설치 확인 ──────────────────────────────────────────────────
+    # ── 3) 설치 확인 ────────────────────────────────────────────────────
     log("[3/4] 설치 확인 중...")
     check = quiet([sys.executable, "-c",
                    "from PyQt6.QtWebEngineWidgets import QWebEngineView"])
@@ -139,14 +343,13 @@ def main():
         log(f"       \"{sys.executable}\" -m pip install "
             "--force-reinstall PyQt6 PyQt6-WebEngine")
         return 1
-    # 설치된 버전 출력 (PyQt6 와 WebEngine 버전이 어긋나면 흰 화면 원인이 됨)
     try:
         out = subprocess.check_output(
             [sys.executable, "-c",
              "import importlib.metadata as m;"
-             "print('PyQt6', m.version('PyQt6'));"
-             "print('PyQt6-Qt6', m.version('PyQt6-Qt6'));"
-             "print('PyQt6-WebEngine', m.version('PyQt6-WebEngine'));"
+             "print('PyQt6              ', m.version('PyQt6'));"
+             "print('PyQt6-Qt6          ', m.version('PyQt6-Qt6'));"
+             "print('PyQt6-WebEngine    ', m.version('PyQt6-WebEngine'));"
              "print('PyQt6-WebEngine-Qt6', m.version('PyQt6-WebEngine-Qt6'))"],
             stderr=subprocess.STDOUT, text=True)
         for line in out.strip().splitlines():
@@ -156,13 +359,12 @@ def main():
     log("      정상.")
     log()
 
-    # ── 4) 시작프로그램 등록 + 즉시 실행 ──────────────────────────────
+    # ── 4) 시작프로그램 등록 + 즉시 실행 ───────────────────────────────
     log("[4/4] 시작프로그램 등록 중...")
     pyw = pythonw_path()
     try:
         os.makedirs(startup, exist_ok=True)
         vbs = os.path.join(startup, "TeacherCalendar.vbs")
-        # pythonw 로 콘솔 없이 조용히 위젯 실행하는 VBS 런처
         vbs_body = (
             'Set WshShell = CreateObject("WScript.Shell")\r\n'
             f'WshShell.Run """{pyw}"" ""{SCRIPT}""", 0, False\r\n')
@@ -174,12 +376,9 @@ def main():
         log("       위젯은 지금 실행되지만, 재부팅 시 자동 실행은 안 될 수 있어요.")
     log()
 
-    # 위젯 즉시 실행 (콘솔 없는 pythonw, 독립 프로세스)
     log("위젯을 실행합니다...")
     try:
-        flags = 0
-        if os.name == "nt":
-            flags = 0x00000008  # DETACHED_PROCESS
+        flags = 0x00000008 if os.name == "nt" else 0  # DETACHED_PROCESS
         subprocess.Popen([pyw, SCRIPT], cwd=HERE, close_fds=True,
                          creationflags=flags)
     except Exception as e:
@@ -188,10 +387,10 @@ def main():
     log()
 
     log("=" * 60)
-    log("  ✅ 설치 완료!")
+    log("  설치 완료!")
     log()
     log("  · 잠시 뒤 바탕화면에 캘린더 위젯이 나타납니다.")
-    log("  · 작업표시줄 오른쪽 아래 트레이의 📅 아이콘을 클릭 → 설정창")
+    log("  · 작업표시줄 오른쪽 아래 트레이의 📅 아이콘 클릭 → 설정창")
     log("  · 컴퓨터를 켤 때마다 위젯이 자동으로 실행됩니다.")
     log("=" * 60)
     return 0
