@@ -23,8 +23,16 @@ except Exception:
     pass
 
 
+_log_file = None
+
 def log(msg=""):
     print(msg, flush=True)
+    if _log_file:
+        try:
+            _log_file.write(msg + "\n")
+            _log_file.flush()
+        except Exception:
+            pass
 
 
 HERE        = os.path.dirname(os.path.abspath(__file__))
@@ -44,7 +52,12 @@ def _is_64bit():
 
 
 def _find_py312():
-    """py.exe 런처로 Python 3.12 를 찾아 실행 파일 경로를 반환. 없으면 None."""
+    """Python 3.12 실행 파일 경로를 반환. 없으면 None.
+
+    1) py.exe 런처 시도 (가장 빠름)
+    2) 일반 설치 경로 직접 탐색 — 신규 설치 직후 PATH 갱신 전에도 동작
+    """
+    # 1. py.exe 런처
     try:
         out = subprocess.check_output(
             ["py", "-3.12", "-c", "import sys; print(sys.executable)"],
@@ -54,6 +67,34 @@ def _find_py312():
             return path
     except Exception:
         pass
+
+    # 2. 경로 직접 탐색
+    roots = []
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    if local_app:
+        roots.append(os.path.join(local_app, "Programs", "Python"))
+    for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        val = os.environ.get(var, "")
+        if val:
+            roots.append(os.path.join(val, "Python"))
+            roots.append(val)
+
+    for root in roots:
+        for folder in ("Python312", "Python3.12"):
+            exe = os.path.join(root, folder, "python.exe")
+            if not os.path.exists(exe):
+                continue
+            try:
+                out = subprocess.check_output(
+                    [exe, "-c",
+                     "import sys; v=sys.version_info; print(v.major, v.minor)"],
+                    stderr=subprocess.DEVNULL, text=True)
+                parts = out.strip().split()
+                if len(parts) == 2 and int(parts[0]) == 3 and int(parts[1]) == 12:
+                    return exe
+            except Exception:
+                pass
+
     return None
 
 
@@ -277,6 +318,13 @@ def quiet(cmd):
 # ── 메인 ────────────────────────────────────────────────────────────────────
 
 def main():
+    global _log_file
+    log_path = os.path.join(HERE, "install.log")
+    try:
+        _log_file = open(log_path, "w", encoding="utf-8")
+    except Exception:
+        _log_file = None
+
     log("=" * 60)
     log("  선생님 캘린더 — 설치를 시작합니다")
     log("=" * 60)
@@ -439,6 +487,8 @@ def main():
     log("  · 잠시 뒤 바탕화면에 캘린더 위젯이 나타납니다.")
     log("  · 작업표시줄 오른쪽 아래 트레이의 📅 아이콘 클릭 → 설정창")
     log("  · 컴퓨터를 켤 때마다 위젯이 자동으로 실행됩니다.")
+    if _log_file:
+        log(f"  · 설치 로그: {log_path}")
     log("=" * 60)
     return 0
 
@@ -453,4 +503,10 @@ if __name__ == "__main__":
         log(traceback.format_exc())
         log("-" * 60)
         code = 1
+    finally:
+        if _log_file:
+            try:
+                _log_file.close()
+            except Exception:
+                pass
     sys.exit(code)
