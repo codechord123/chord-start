@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul
 title 선생님 캘린더 - 제거
 cd /d "%~dp0"
