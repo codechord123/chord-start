@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 title 선생님 캘린더 - 제거
 cd /d "%~dp0"
@@ -24,6 +24,7 @@ echo [3/4] 빌드 결과물 삭제...
 if exist "build" rmdir /s /q "build" >nul 2>nul
 if exist "dist"  rmdir /s /q "dist"  >nul 2>nul
 if exist "TeacherCalendar.spec" del /f /q "TeacherCalendar.spec" >nul 2>nul
+if exist "install.log" del /f /q "install.log" >nul 2>nul
 echo       완료.
 
 echo [4/4] 로그인/설정 데이터(.webdata) 삭제...
