@@ -40,7 +40,17 @@ except ImportError as _e:
         pass
     sys.exit(1)
 
-APP_DIR   = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller 로 .exe 빌드되면(frozen) 경로가 달라진다.
+#   BUNDLE_DIR : index.html 등 읽기용 자원이 들어 있는 곳
+#   DATA_DIR   : .webdata(로그인·설정) 를 저장할 쓰기 가능한 곳
+if getattr(sys, 'frozen', False):
+    BUNDLE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+    DATA_DIR   = os.path.dirname(sys.executable)
+else:
+    BUNDLE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR   = BUNDLE_DIR
+
+APP_DIR   = BUNDLE_DIR          # 정적 파일 서빙 기준 폴더
 HTML_FILE = 'index.html'
 
 # ── Windows WorkerW (벽지 레이어 임베딩) ──────────────────────────────────
@@ -242,7 +252,7 @@ class CalendarWidget(QWidget):
 
         # 영구 WebEngine 프로파일
         profile = QWebEngineProfile("teacher_cal", self)
-        store   = os.path.join(APP_DIR, ".webdata")
+        store   = os.path.join(DATA_DIR, ".webdata")
         os.makedirs(store, exist_ok=True)
         profile.setPersistentStoragePath(store)
         profile.setCachePath(os.path.join(store, "cache"))
