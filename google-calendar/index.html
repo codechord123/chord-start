@@ -827,29 +827,76 @@ function gisLoaded() {
 }
 
 function maybeEnable() {
-    if (gapiReady && gisReady) $('login-btn').classList.remove('hidden');
+    // 외부 브라우저 로그인을 쓰므로 gapi(client)만 준비되면 버튼을 켠다.
+    if (gapiReady) $('login-btn').classList.remove('hidden');
 }
 
+// 구글은 앱 내장 웹뷰(QWebEngine) 안에서의 OAuth를 보안상 차단한다
+// ("This browser or app may not be secure"). 그래서 로그인만 '진짜 브라우저'에서
+// 열고, 받은 토큰을 로컬 서버를 통해 위젯으로 가져온다.
+let _loginPolling = false;
+
 function handleAuthClick() {
-    tokenClient.callback = async resp => {
-        if (resp.error) throw resp;
-        $('login-btn').classList.add('hidden');
-        $('logout-btn').classList.remove('hidden');
-        $('refresh-btn').classList.remove('hidden');
-        $('add-btn').classList.remove('hidden');
-        fetchEvents();
-        // 같은 구글 계정으로 게시판(Firebase)도 함께 로그인
-        signInBoardWithToken(resp.access_token);
-    };
-    gapi.client.getToken() === null
-        ? tokenClient.requestAccessToken({ prompt: 'consent' })
-        : tokenClient.requestAccessToken({ prompt: '' });
+    const redirect = location.origin + '/oauth2callback';
+    const params = new URLSearchParams({
+        client_id: CLIENT_ID,
+        redirect_uri: redirect,
+        response_type: 'token',
+        scope: SCOPES,
+        include_granted_scopes: 'true',
+        prompt: 'consent',
+        state: 'w' + Date.now()
+    });
+    const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString();
+
+    // 로컬 서버에 부탁해 기본 브라우저(Chrome/Edge)에서 로그인 페이지를 연다
+    fetch('/oauth2open?u=' + encodeURIComponent(authUrl)).catch(() => {});
+    showToast('🔓 기본 브라우저에서 구글 로그인을 완료해 주세요…', 5000);
+    pollForToken();
+}
+
+function pollForToken() {
+    if (_loginPolling) return;
+    _loginPolling = true;
+    let tries = 0;
+    const timer = setInterval(async () => {
+        tries++;
+        try {
+            const r = await fetch('/oauth2token');
+            const d = await r.json();
+            if (d && d.access_token) {
+                clearInterval(timer);
+                _loginPolling = false;
+                onLoggedIn(d.access_token);
+                return;
+            }
+        } catch (e) {}
+        if (tries > 160) {           // 약 4분 후 포기
+            clearInterval(timer);
+            _loginPolling = false;
+        }
+    }, 1500);
+}
+
+function onLoggedIn(accessToken) {
+    gapi.client.setToken({ access_token: accessToken });
+    $('login-btn').classList.add('hidden');
+    $('logout-btn').classList.remove('hidden');
+    $('refresh-btn').classList.remove('hidden');
+    $('add-btn').classList.remove('hidden');
+    showToast('✅ 로그인 완료');
+    fetchEvents();
+    // 같은 구글 계정으로 게시판(Firebase)도 함께 로그인
+    signInBoardWithToken(accessToken);
 }
 
 function handleSignoutClick() {
     const token = gapi.client.getToken();
     if (!token) return;
-    google.accounts.oauth2.revoke(token.access_token);
+    try {
+        if (window.google && google.accounts && google.accounts.oauth2)
+            google.accounts.oauth2.revoke(token.access_token);
+    } catch (e) {}
     gapi.client.setToken('');
     if (fbAuth && fbAuth.currentUser) fbAuth.signOut();   // 게시판도 함께 로그아웃
     $('login-btn').classList.remove('hidden');
@@ -1463,7 +1510,7 @@ function initFirebase() {
 // 캘린더와 동일한 구글 로그인을 게시판에도 그대로 사용한다.
 // (이미 검증된 OAuth 클라이언트를 재사용 → 별도 origin 등록 불필요)
 function boardSignIn() {
-    if (!tokenClient || !gapiReady) {
+    if (!gapiReady) {
         showToast('구글 로그인 준비 중입니다. 잠시 후 다시 시도해 주세요.');
         return;
     }

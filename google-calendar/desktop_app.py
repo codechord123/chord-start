@@ -8,10 +8,13 @@ index.html (구글 캘린더 + TODO)을 바탕화면에 얹히는 위젯으로 �
 """
 import os
 import sys
+import json
 import socket
 import threading
 import functools
+import webbrowser
 import http.server
+from urllib.parse import urlparse, parse_qs, unquote
 
 try:
     from PyQt6.QtCore import Qt, QUrl, QSettings, QTimer
@@ -82,13 +85,97 @@ def find_free_port(preferred=8765):
     return preferred
 
 
-class QuietHandler(http.server.SimpleHTTPRequestHandler):
+# 외부 브라우저 로그인으로 받은 토큰을 잠깐 보관하는 곳 (위젯이 폴링으로 가져감)
+_oauth_holder = {"token": None}
+
+# 외부 브라우저에서 구글 로그인이 끝나면 표시되는 콜백 페이지.
+# URL #fragment 의 access_token 을 읽어 로컬 서버로 넘긴 뒤 창을 닫으라고 안내한다.
+_CALLBACK_HTML = """<!doctype html><html lang='ko'><head><meta charset='utf-8'>
+<title>로그인 완료</title>
+<style>
+ body{font-family:'Malgun Gothic','Noto Sans KR',sans-serif;background:#0f172a;color:#e2e8f0;
+      display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+ .card{text-align:center;padding:44px 56px;background:#1e293b;border-radius:18px;
+       box-shadow:0 20px 60px rgba(0,0,0,.5)}
+ h1{font-size:22px;margin:0 0 8px} p{color:#94a3b8;margin:0}
+</style></head><body>
+<div class='card'><h1 id='m'>로그인 처리 중…</h1><p id='s'>잠시만 기다려 주세요.</p></div>
+<script>
+(function(){
+  var p = new URLSearchParams(location.hash.substring(1));
+  var tok = p.get('access_token');
+  var m = document.getElementById('m'), s = document.getElementById('s');
+  if(!tok){ m.textContent='⚠️ 로그인 실패'; s.textContent='위젯에서 다시 시도해 주세요.'; return; }
+  fetch('/oauth2token',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({access_token:tok,expires_in:p.get('expires_in')})})
+   .then(function(){ m.textContent='✅ 로그인 완료';
+     s.textContent='이 창을 닫고 바탕화면 위젯으로 돌아가세요.';
+     setTimeout(function(){ try{window.close();}catch(e){} },1500); })
+   .catch(function(){ m.textContent='연결 오류'; s.textContent='위젯이 실행 중인지 확인하세요.'; });
+})();
+</script></body></html>"""
+
+
+class AppHandler(http.server.SimpleHTTPRequestHandler):
+    """정적 파일 서빙 + 외부 브라우저 OAuth 중계 엔드포인트."""
     def log_message(self, *args):
         pass
 
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == '/oauth2callback':
+            self._html(_CALLBACK_HTML)
+            return
+        if path == '/oauth2open':
+            q = parse_qs(parsed.query)
+            url = unquote(q.get('u', [''])[0])
+            # 구글 인증 주소만 외부 브라우저로 연다 (안전장치)
+            if url.startswith('https://accounts.google.com/'):
+                try:
+                    webbrowser.open(url)
+                except Exception:
+                    pass
+            self._json({"ok": True})
+            return
+        if path == '/oauth2token':
+            tok = _oauth_holder.get("token")
+            _oauth_holder["token"] = None       # 한 번 건네면 비운다
+            self._json(tok or {})
+            return
+        return super().do_GET()
+
+    def do_POST(self):
+        if urlparse(self.path).path == '/oauth2token':
+            ln = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(ln) if ln else b'{}'
+            try:
+                _oauth_holder["token"] = json.loads(raw.decode('utf-8'))
+            except Exception:
+                _oauth_holder["token"] = None
+            self._json({"ok": True})
+            return
+        self.send_error(404)
+
+    def _html(self, html):
+        data = html.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _json(self, obj):
+        data = json.dumps(obj).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
 
 def start_server(port):
-    handler = functools.partial(QuietHandler, directory=APP_DIR)
+    handler = functools.partial(AppHandler, directory=APP_DIR)
     httpd = http.server.ThreadingHTTPServer(('127.0.0.1', port), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
