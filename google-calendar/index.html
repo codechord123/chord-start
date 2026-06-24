@@ -1013,7 +1013,10 @@ function renderMonth() {
     const cells = [];
     for (let i = 0; i < first; i++) cells.push(null);
     for (let d = 1; d <= dim; d++) cells.push(new Date(y, m, d));
-    while (cells.length < 42) cells.push(null);
+    // 이 달에 실제로 필요한 주 수만큼만 채운다 (빈 줄 제거)
+    const weeks = Math.ceil(cells.length / 7);
+    while (cells.length < weeks * 7) cells.push(null);
+    grid.style.gridTemplateRows = `repeat(${weeks}, 1fr)`;
 
     cells.forEach((date, idx) => {
         const dow = idx % 7;
