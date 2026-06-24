@@ -957,7 +957,7 @@ async function fetchEvents() {
 
 // ── 모달 ────────────────────────────────────────────────
 function openModal(dateStr = null, ev = null) {
-    if (!gapi.client || gapi.client.getToken() === null) {
+    if (!gapi.client || !gapi.client.getToken()) {
         showToast('일정을 추가/수정하려면 구글 로그인이 필요합니다.');
         return;
     }

@@ -124,15 +124,21 @@ def _find_workerw():
 
 
 # ── 로컬 HTTP 서버 (정적 파일 + OAuth 중계) ──────────────────────────────
+_FIXED_PORT = 8765  # 포트를 고정한다.
+# Firebase localStorage 세션은 'http://localhost:PORT' 가 origin 키다.
+# 포트가 바뀌면 세션이 날아가므로 항상 같은 포트를 써야 한다.
+# 이미 실행 중인 인스턴스가 있으면 아래에서 경고를 띄운다.
+
 def _find_free_port():
-    for p in [8765, 8766, 8767, 8768, 8770, 8800]:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(('127.0.0.1', p)) != 0:
-                return p
-    return 8765
+    """고정 포트 8765를 확인하고 반환. 점유 시 None 반환."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex(('127.0.0.1', _FIXED_PORT)) != 0:
+            return _FIXED_PORT
+    return None   # 이미 사용 중
 
 
-_oauth_token: dict | None = None   # 외부 브라우저에서 받은 토큰 임시 보관
+_oauth_state: dict = {'token': None}  # 외부 브라우저에서 받은 토큰 임시 보관
+_oauth_lock  = threading.Lock()       # token 읽기/쓰기 스레드 안전 보호
 
 # 구글 OAuth implicit flow 콜백 — URL hash 에서 토큰 파싱 후 서버로 POST
 _CALLBACK_HTML = """<!doctype html><html lang='ko'><head><meta charset='utf-8'>
@@ -172,7 +178,6 @@ class _AppHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        global _oauth_token
         p = urlparse(self.path)
         if p.path == '/oauth2callback':
             self._html(_CALLBACK_HTML)
@@ -187,21 +192,22 @@ class _AppHandler(http.server.SimpleHTTPRequestHandler):
             self._json({'ok': True})
             return
         if p.path == '/oauth2token':
-            tok = _oauth_token
-            _oauth_token = None
+            with _oauth_lock:
+                tok = _oauth_state.pop('token', None)
             self._json(tok or {})
             return
         super().do_GET()
 
     def do_POST(self):
-        global _oauth_token
         if urlparse(self.path).path == '/oauth2token':
             n = int(self.headers.get('Content-Length', 0) or 0)
-            raw = self.rfile.read(n) if n else b'{}'
             try:
-                _oauth_token = json.loads(raw.decode())
+                raw = self.rfile.read(n) if n else b'{}'
+                tok = json.loads(raw.decode())
             except Exception:
-                _oauth_token = None
+                tok = None
+            with _oauth_lock:
+                _oauth_state['token'] = tok
             self._json({'ok': True})
             return
         self.send_error(404)
@@ -475,6 +481,7 @@ class CalendarWidget(QWidget):
         self._reloaded_once = False
         self._loaded = False
         self._load()
+        QTimer.singleShot(20000, self._watchdog)  # 재로드 후에도 감시 재실행
 
     def _watchdog(self):
         # 20초가 지나도 한 번도 로드되지 않음 = 내장 엔진(QtWebEngine)이 안 켜짐.
@@ -852,6 +859,18 @@ def main():
         html_content = ""
 
     port = _find_free_port()
+    if port is None:
+        # 포트 점유 = 이미 위젯이 실행 중일 가능성이 높다
+        wlog("[경고] 포트 %d 이미 사용 중 — 기존 인스턴스가 실행 중일 수 있음" % _FIXED_PORT)
+        from PyQt6.QtWidgets import QMessageBox
+        r = QMessageBox.question(None, "위젯 실행 중",
+            f"포트 {_FIXED_PORT}가 이미 사용 중입니다.\n"
+            "위젯이 이미 실행 중이라면 트레이(📅)에서 제어하세요.\n\n"
+            "그래도 강제로 시작하시겠습니까?")
+        from PyQt6.QtWidgets import QMessageBox as QMB
+        if r != QMB.StandardButton.Yes:
+            sys.exit(0)
+        port = _FIXED_PORT   # 강제 시작 (포트 충돌로 서버 실패 가능)
     try:
         _start_server(port)
         wlog("로컬 서버 시작 OK  port=%d" % port)
@@ -859,7 +878,8 @@ def main():
         wlog("[치명] 서버 시작 실패: %r" % e)
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.critical(None, "오류",
-            f"로컬 서버를 시작하지 못했습니다.\n{e}")
+            f"로컬 서버를 시작하지 못했습니다.\n{e}\n\n"
+            f"포트 {_FIXED_PORT}를 다른 프로그램이 사용 중인지 확인하세요.")
         sys.exit(1)
     url = f"http://localhost:{port}/{HTML_FILE}"
 
