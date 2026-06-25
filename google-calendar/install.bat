@@ -35,9 +35,13 @@ if defined PYCMD goto RUN
 goto BOOTSTRAP
 
 :TRY
-rem %* = candidate command (e.g. "py -3.12"). Test it silently.
-%* -c "import sys" >nul 2>nul
-if not errorlevel 1 set "PYCMD=%*"
+rem %* = candidate command (e.g. "py -3.12").
+rem Accept ONLY if Python actually RUNS and prints our marker.
+rem (The new py launcher can return exit code 0 for an UNINSTALLED
+rem  version, so checking errorlevel alone is not reliable.)
+set "OUT="
+for /f "usebackq delims=" %%v in (`%* -c "print('PYOK')" 2^>nul`) do set "OUT=%%v"
+if "!OUT!"=="PYOK" set "PYCMD=%*"
 goto :eof
 
 :RUN
@@ -59,10 +63,11 @@ echo.
 echo Installing Python 3.12. A setup window may appear; please wait...
 "%PYINST%" /passive InstallAllUsers=0 PrependPath=1 Include_launcher=1 Include_test=0
 del "%PYINST%" >nul 2>nul
-py -3.12 -c "import sys" >nul 2>nul
-if errorlevel 1 goto MANUAL
-set "PYCMD=py -3.12"
-goto RUN
+call :TRY py -3.12
+if defined PYCMD goto RUN
+call :TRY python
+if defined PYCMD goto RUN
+goto MANUAL
 
 :MANUAL
 echo.
