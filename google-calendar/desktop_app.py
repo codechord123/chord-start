@@ -26,11 +26,15 @@ from urllib.parse import urlparse, parse_qs, unquote
 #
 #   --no-sandbox          : 제한 환경에서 렌더 프로세스 차단 방지
 #   --no-proxy-server     : 학교/회사 프록시가 localhost 연결을 가로채는 문제 방지
-#   --disable-gpu         ❌ 화면 합성 안 됨 — 사용 금지
+#   --disable-gpu         : Chromium GPU 서브프로세스 비활성화.
+#                           일부 PC 에서 GPU 프로세스가 충돌해 앱 전체가 죽는 문제 방지.
+#                           Qt 레벨은 AA_UseSoftwareOpenGL 로 소프트웨어 렌더링이므로
+#                           페이지 표시에 영향 없음.
+#   --disable-gpu-sandbox : GPU 프로세스 샌드박스도 비활성화 (sandbox 충돌 방지)
 #   --in-process-gpu      ❌ 일부 PC 에서 로드 자체 멈춤 — 사용 금지
 #   --disable-web-security ❌ SOP 무력화, OAuth 토큰 탈취 위험 — 사용 금지
 _cf = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
-for _flag in ["--no-sandbox", "--no-proxy-server"]:
+for _flag in ["--no-sandbox", "--no-proxy-server", "--disable-gpu", "--disable-gpu-sandbox"]:
     if _flag not in _cf:
         _cf = (_cf + " " + _flag).strip()
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = _cf
