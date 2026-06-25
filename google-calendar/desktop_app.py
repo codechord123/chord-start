@@ -391,8 +391,9 @@ class CalendarWidget(QWidget):
         self._view.loadFinished.connect(self._on_load_finished)
         wlog("위젯 생성, URL = " + url)
         self._load()
-        # 감시 타이머: 20초 안에 로드가 완료되지 않으면 엔진 이상으로 간주
-        QTimer.singleShot(20000, self._watchdog)
+        # 감시 타이머: 8초 안에 로드가 완료되지 않으면 엔진 이상으로 간주하고
+        # 기본 브라우저로 캘린더를 열어 선생님이 무조건 사용할 수 있게 한다.
+        QTimer.singleShot(8000, self._watchdog)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -513,13 +514,25 @@ class CalendarWidget(QWidget):
         QTimer.singleShot(20000, self._watchdog)  # 재로드 후에도 감시 재실행
 
     def _watchdog(self):
-        # 20초가 지나도 한 번도 로드되지 않음 = 내장 엔진(QtWebEngine)이 안 켜짐.
-        if not self._loaded:
-            wlog("[경고] 20초간 로드 없음 — QtWebEngine 미동작 의심")
+        # 일정 시간이 지나도 한 번도 로드되지 않음 = 내장 엔진(QtWebEngine)이 안 켜짐.
+        if self._loaded:
+            return
+        wlog("[경고] 로드 없음 — QtWebEngine 미동작. 브라우저 폴백 실행")
+        # (1) 위젯 창 안에는 안내 화면을 띄운다.
+        try:
+            self._view.setHtml(_ENGINE_HTML)
+        except Exception:
+            pass
+        # (2) 무조건 작동하는 폴백: 기본 브라우저(크롬/엣지)로 캘린더를 연다.
+        #     로컬 서버는 정상 동작하므로 실제 브라우저에서는 100% 표시된다.
+        if not getattr(self, "_browser_opened", False):
+            self._browser_opened = True
             try:
-                self._view.setHtml(_ENGINE_HTML)
-            except Exception:
-                pass
+                import webbrowser
+                webbrowser.open(self._url)
+                wlog("기본 브라우저로 캘린더 열기 OK: %s" % self._url)
+            except Exception as e:
+                wlog("[경고] 브라우저 폴백 실패: %r" % e)
 
     def _force_paint(self):
         # 로드는 됐는데 화면이 안 그려지는 경우를 대비해 강제 리페인트.
@@ -913,6 +926,32 @@ def main():
             f"포트 {_FIXED_PORT}를 다른 프로그램이 사용 중인지 확인하세요.")
         sys.exit(1)
     url = f"http://localhost:{port}/{HTML_FILE}"
+
+    # ── 안전 모드 (--browser) ────────────────────────────────────────────
+    # 내장 위젯(QtWebEngine)을 만들지 않고 기본 브라우저로 캘린더를 연다.
+    # GPU/Chromium 충돌이 나는 PC 에서도 100% 동작하는 보장된 폴백 경로.
+    if "--browser" in sys.argv:
+        wlog("안전 모드(--browser): 기본 브라우저로 캘린더를 엽니다 → %s" % url)
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            wlog("[경고] 브라우저 열기 실패: %r" % e)
+        tray = QSystemTrayIcon(_make_icon(), app)
+        tray.setToolTip("선생님 캘린더 (브라우저 모드) — 클릭하면 다시 엽니다")
+        menu = QMenu()
+        a_open = QAction("브라우저로 다시 열기", app)
+        a_open.triggered.connect(lambda: webbrowser.open(url))
+        a_quit = QAction("종료", app)
+        a_quit.triggered.connect(app.quit)
+        menu.addAction(a_open)
+        menu.addSeparator()
+        menu.addAction(a_quit)
+        tray.setContextMenu(menu)
+        tray.activated.connect(
+            lambda r: webbrowser.open(url)
+            if r == QSystemTrayIcon.ActivationReason.Trigger else None)
+        tray.show()
+        sys.exit(app.exec())
 
     widget   = CalendarWidget(url, html_content)
     settings = SettingsWindow(widget, app)
