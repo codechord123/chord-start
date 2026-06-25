@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Desktop widget runtime data (local login cache / web storage)
+google-calendar/.webdata/
+
+# User-specific credentials — copy config.js.example → config.js and fill in values
+google-calendar/config.js
